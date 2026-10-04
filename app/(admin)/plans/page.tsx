@@ -74,7 +74,7 @@ export default async function PlansPage() {
                  { key: "Group Classes", vals: ["Paid", "Paid", "Paid", "Free", "Paid", "Paid"] },
                ].map((row, idx) => (
                   <tr key={idx} className="hover:bg-slate-50/50 dark:hover:bg-white/[0.02]">
-                    <td className="td sticky left-0 bg-white font-medium shadow-[1px_0_0_0_#f1f5f9]">{row.key}</td>
+                    <td className="td sticky left-0 bg-white dark:bg-[#18181b] font-medium shadow-[1px_0_0_0_#f1f5f9] dark:shadow-[1px_0_0_0_#27272a]">{row.key}</td>
                     {row.vals.map((val, i) => (
                       <td key={i} className="td text-center text-slate-500 dark:text-slate-400">
                         {val === "Yes" ? <CheckCircle2 className="h-4 w-4 text-indigo-500 mx-auto" /> : val === "—" ? <span className="text-slate-300">—</span> : val}
