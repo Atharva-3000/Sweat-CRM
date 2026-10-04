@@ -586,7 +586,8 @@ export async function logMessage(input: {
       sentAt: `${today()} ${nowTime()}`,
       status: input.channel === "call" ? "Call logged (mock)" : "Sent (mock)",
     });
-    const label = { whatsapp: "WhatsApp message", sms: "SMS", email: "Email", call: "Call" }[input.channel as any] ?? "Message";
+    const labelMap: Record<string, string> = { whatsapp: "WhatsApp message", sms: "SMS", email: "Email", call: "Call" };
+    const label = labelMap[String(input.channel)] ?? "Message";
     return ok(input.channel === "call" ? `Call to ${input.recipientName} logged (mock)` : `${label} sent to ${input.recipientName} (mock)`);
   });
 }

@@ -179,7 +179,7 @@ export default async function MemberPage({ params }: { params: Promise<{ id: str
                                Print Receipt
                              </a>
                              <span className="text-[10px] text-slate-400 font-mono" title="Verification Code">
-                               Ver: {p.id.split('').map((c) => c.charCodeAt(0).toString(16)).join('').slice(0, 6).toUpperCase()}
+                               Ver: {String(p.id).split('').map((c: string) => c.charCodeAt(0).toString(16)).join('').slice(0, 6).toUpperCase()}
                              </span>
                            </div>
                          </td>
