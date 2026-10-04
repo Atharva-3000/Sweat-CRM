@@ -1,4 +1,4 @@
-import { getDb } from "@/lib/db";
+import { supabase } from "@/lib/supabase";
 import { getBranchScope } from "@/lib/auth";
 import { Card, PageHeader, Avatar, StatusBadge } from "@/components/ui";
 import { memberViews } from "@/lib/queries";
@@ -7,9 +7,8 @@ import { ContactButtons } from "@/components/contact-buttons";
 import { formatINR } from "@/lib/dates";
 
 export default async function RenewalsPage() {
-  const db = await getDb();
   const scope = await getBranchScope();
-  const mViews = memberViews(db, scope);
+  const mViews = await memberViews(scope);
 
   const expiring = mViews.filter(m => m.display === "expiring").sort((a, b) => a.daysLeft - b.daysLeft);
   const expired = mViews.filter(m => m.display === "expired").sort((a, b) => a.endDate.localeCompare(b.endDate)).reverse();

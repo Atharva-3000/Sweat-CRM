@@ -1,8 +1,10 @@
-import type { Db, DisplayStatus, Member, Settings } from "./types";
+import { supabase } from "@/lib/supabase";
+import type { DisplayStatus, Member, Settings } from "./types";
 import { daysBetween, today } from "./dates";
 
-export function settingsOf(db: Db): Settings {
-  const map = new Map(db.settings.map((s) => [s.key, s.value]));
+export async function settingsOf(): Promise<Settings> {
+  const { data, error } = await supabase.from('settings').select('*');
+  const map = new Map((data || []).map((s: any) => [s.key, s.value]));
   return {
     gymName: map.get("gymName") || "Sweat Fitness",
     ownerName: map.get("ownerName") || "Owner",
@@ -42,28 +44,40 @@ export type MemberView = Member & {
   lastVisit: string;
 };
 
-export function memberViews(db: Db, scope = "all"): MemberView[] {
-  const s = settingsOf(db);
+export async function memberViews(scope = "all"): Promise<MemberView[]> {
+  const s = await settingsOf();
   const T = today();
-  const plans = new Map(db.plans.map((p) => [p.id, p.name]));
-  const branches = new Map(db.branches.map((b) => [b.id, b.name]));
-  const staff = new Map(db.staff.map((x) => [x.id, x.name]));
+  const [{ data: plansData }, { data: branchesData }, { data: staffData }, { data: attendanceData }] = await Promise.all([
+    supabase.from('plans').select('*'),
+    supabase.from('branches').select('*'),
+    supabase.from('staff').select('*'),
+    supabase.from('attendance').select('*'),
+  ]);
+  
+  const plans = new Map((plansData || []).map((p: any) => [p.id, p.name]));
+  const branches = new Map((branchesData || []).map((b: any) => [b.id, b.name]));
+  const staff = new Map((staffData || []).map((x: any) => [x.id, x.name]));
   const lastVisit = new Map<string, string>();
-  for (const a of db.attendance) {
+  for (const a of (attendanceData || [])) {
     const prev = lastVisit.get(a.memberId);
     if (!prev || a.date > prev) lastVisit.set(a.memberId, a.date);
   }
-  return db.members
-    .filter((m) => inScope(m.branchId, scope))
-    .map((m) => ({
-      ...m,
-      planName: plans.get(m.planId) ?? "—",
-      branchName: branches.get(m.branchId) ?? "—",
-      trainerName: staff.get(m.trainerId) ?? "",
-      display: displayStatus(m, s.reminderDays, T),
-      daysLeft: daysBetween(T, m.endDate),
-      lastVisit: lastVisit.get(m.id) ?? "",
-    }));
+
+  let query = supabase.from('members').select('*');
+  if (scope !== "all") {
+    query = query.eq('branchId', scope);
+  }
+  const { data: membersData, error } = await query;
+  
+  return (membersData || []).map((m: any) => ({
+    ...m,
+    planName: plans.get(m.planId) ?? "—",
+    branchName: branches.get(m.branchId) ?? "—",
+    trainerName: staff.get(m.trainerId) ?? "",
+    display: displayStatus(m, s.reminderDays, T),
+    daysLeft: daysBetween(T, m.endDate),
+    lastVisit: lastVisit.get(m.id) ?? "",
+  }));
 }
 
 export function branchShort(name: string): string {

@@ -3,14 +3,14 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { getDb, mutate, nextId, resetDb } from "@/lib/db";
 import { requireAdmin } from "@/lib/auth";
 import { ADMIN_PASS, ADMIN_USER, BRANCH_COOKIE, SESSION_COOKIE, sessionToken } from "@/lib/session";
 import { addDays, daysBetween, nowTime, today } from "@/lib/dates";
 import { displayStatus, parseMemberRef, settingsOf } from "@/lib/queries";
 import { TEMPLATES, type TemplateKey } from "@/lib/templates";
-import type { ActionResult, Db, Member } from "@/lib/types";
+import type { ActionResult, Member } from "@/lib/types";
 import { getActionEmailHtml } from "@/lib/email-templates";
+import { supabase } from "@/lib/supabase";
 
 // ---------- helpers ----------
 
@@ -27,7 +27,6 @@ const fail = (error: string): ActionResult => ({ ok: false, error });
 
 class UserError extends Error {}
 
-/** Wrap an action so validation errors become friendly toasts. */
 async function guarded(fn: () => Promise<ActionResult>): Promise<ActionResult> {
   await requireAdmin();
   try {
@@ -38,21 +37,35 @@ async function guarded(fn: () => Promise<ActionResult>): Promise<ActionResult> {
   }
 }
 
+async function getNextId(table: string, prefix: string, pad = 4): Promise<string> {
+  const { data } = await supabase.from(table).select('id');
+  let max = 0;
+  for (const row of data || []) {
+    const numStr = row.id.replace(prefix, '');
+    const n = parseInt(numStr, 10);
+    if (!isNaN(n) && n > max) max = n;
+  }
+  return `${prefix}${String(max + 1).padStart(pad, "0")}`;
+}
+
 export async function searchMembers(query: string) {
   await requireAdmin();
   if (!query || query.length < 1) return [];
   const q = query.toLowerCase();
-  const db = await getDb();
-  return db.members
-    .filter(m => m.name.toLowerCase().includes(q) || m.phone.includes(q) || m.id.toLowerCase().includes(q))
-    .map(m => ({ id: m.id, name: m.name, phone: m.phone, status: displayStatus(m, settingsOf(db).reminderDays) }))
+  
+  const { data: members } = await supabase.from('members').select('*');
+  const s = await settingsOf();
+  
+  return (members || [])
+    .filter((m: any) => m.name.toLowerCase().includes(q) || m.phone.includes(q) || m.id.toLowerCase().includes(q))
+    .map((m: any) => ({ id: m.id, name: m.name, phone: m.phone, status: displayStatus(m, s.reminderDays) }))
     .slice(0, 8);
 }
 
-function findMember(db: Db, id: string): Member {
-  const m = db.members.find((x) => x.id === id);
-  if (!m) throw new UserError("Member not found. Pick a member from the list.");
-  return m;
+async function findMember(id: string): Promise<Member> {
+  const { data } = await supabase.from('members').select('*').eq('id', id).single();
+  if (!data) throw new UserError("Member not found. Pick a member from the list.");
+  return data as Member;
 }
 
 function validPhone(p: string) {
@@ -100,59 +113,64 @@ export async function createMember(fd: FormData): Promise<ActionResult> {
     if (!phone) throw new UserError("Enter a valid 10-digit phone number");
     const leadId = str(fd, "leadId");
 
-    const id = await mutate((db) => {
-      if (db.members.some((m) => m.phone === phone)) throw new UserError("A member with this phone number already exists");
-      const plan = db.plans.find((p) => p.id === str(fd, "planId"));
-      if (!plan) throw new UserError("Select a membership plan");
-      const branchId = str(fd, "branchId");
-      if (!db.branches.some((b) => b.id === branchId)) throw new UserError("Select a branch");
-      const startDate = str(fd, "startDate") || today();
-      const paid = num(fd, "amountPaid");
-      const discount = num(fd, "discount");
-      const due = Math.max(0, plan.price - discount - paid);
-      const id = nextId(db.members, "M");
-      db.members.push({
-        id,
-        name,
-        phone,
-        email: str(fd, "email"),
-        gender: str(fd, "gender"),
-        dob: str(fd, "dob"),
-        address: str(fd, "address"),
-        branchId,
-        planId: plan.id,
-        trainerId: str(fd, "trainerId"),
-        joinDate: today(),
-        startDate,
-        endDate: addDays(startDate, plan.durationDays - 1),
-        status: "active",
-        frozenOn: "",
-        balanceDue: due,
-        emergencyContact: str(fd, "emergencyContact"),
-        notes: str(fd, "notes"),
-      });
-      if (paid > 0) {
-        db.payments.push({
-          id: nextId(db.payments, "P", 5),
-          memberId: id,
-          branchId,
-          date: today(),
-          amount: paid,
-          method: str(fd, "method") || "Cash",
-          type: "New",
-          planId: plan.id,
-          note: discount ? `Discount ₹${discount}` : "",
-        });
-      }
-      if (leadId) {
-        const lead = db.leads.find((l) => l.id === leadId);
-        if (lead) {
-          lead.status = "Converted";
-          lead.followUpDate = "";
-        }
-      }
-      return id;
+    const { data: existing } = await supabase.from('members').select('id').eq('phone', phone);
+    if (existing && existing.length > 0) throw new UserError("A member with this phone number already exists");
+
+    const planId = str(fd, "planId");
+    const { data: plan } = await supabase.from('plans').select('*').eq('id', planId).single();
+    if (!plan) throw new UserError("Select a membership plan");
+
+    const branchId = str(fd, "branchId");
+    const { data: branch } = await supabase.from('branches').select('id').eq('id', branchId).single();
+    if (!branch) throw new UserError("Select a branch");
+
+    const startDate = str(fd, "startDate") || today();
+    const paid = num(fd, "amountPaid");
+    const discount = num(fd, "discount");
+    const due = Math.max(0, plan.price - discount - paid);
+    
+    const id = await getNextId('members', 'M', 4);
+    
+    await supabase.from('members').insert({
+      id,
+      name,
+      phone,
+      email: str(fd, "email"),
+      gender: str(fd, "gender"),
+      dob: str(fd, "dob"),
+      address: str(fd, "address"),
+      branchId,
+      planId: plan.id,
+      trainerId: str(fd, "trainerId"),
+      joinDate: today(),
+      startDate,
+      endDate: addDays(startDate, plan.durationDays - 1),
+      status: "active",
+      frozenOn: "",
+      balanceDue: due,
+      emergencyContact: str(fd, "emergencyContact"),
+      notes: str(fd, "notes"),
     });
+
+    if (paid > 0) {
+      const pid = await getNextId('payments', 'P', 5);
+      await supabase.from('payments').insert({
+        id: pid,
+        memberId: id,
+        branchId,
+        date: today(),
+        amount: paid,
+        method: str(fd, "method") || "Cash",
+        type: "New",
+        planId: plan.id,
+        note: discount ? `Discount ₹${discount}` : "",
+      });
+    }
+
+    if (leadId) {
+      await supabase.from('leads').update({ status: "Converted", followUpDate: "" }).eq('id', leadId);
+    }
+
     return ok(`Member ${name} added (${id})`, `/members/${id}`);
   });
 }
@@ -163,25 +181,27 @@ export async function updateMember(fd: FormData): Promise<ActionResult> {
     const phone = validPhone(str(fd, "phone"));
     if (!str(fd, "name")) throw new UserError("Name is required");
     if (!phone) throw new UserError("Enter a valid 10-digit phone number");
-    await mutate((db) => {
-      const m = findMember(db, id);
-      if (db.members.some((x) => x.phone === phone && x.id !== id)) throw new UserError("Another member already uses this phone number");
-      Object.assign(m, {
-        name: str(fd, "name"),
-        phone,
-        email: str(fd, "email"),
-        gender: str(fd, "gender"),
-        dob: str(fd, "dob"),
-        address: str(fd, "address"),
-        branchId: str(fd, "branchId") || m.branchId,
-        trainerId: str(fd, "trainerId"),
-        emergencyContact: str(fd, "emergencyContact"),
-        notes: str(fd, "notes"),
-        startDate: str(fd, "startDate") || m.startDate,
-        endDate: str(fd, "endDate") || m.endDate,
-        balanceDue: Math.max(0, num(fd, "balanceDue")),
-      });
-    });
+
+    const m = await findMember(id);
+    const { data: others } = await supabase.from('members').select('id').eq('phone', phone).neq('id', id);
+    if (others && others.length > 0) throw new UserError("Another member already uses this phone number");
+
+    await supabase.from('members').update({
+      name: str(fd, "name"),
+      phone,
+      email: str(fd, "email"),
+      gender: str(fd, "gender"),
+      dob: str(fd, "dob"),
+      address: str(fd, "address"),
+      branchId: str(fd, "branchId") || m.branchId,
+      trainerId: str(fd, "trainerId"),
+      emergencyContact: str(fd, "emergencyContact"),
+      notes: str(fd, "notes"),
+      startDate: str(fd, "startDate") || m.startDate,
+      endDate: str(fd, "endDate") || m.endDate,
+      balanceDue: Math.max(0, num(fd, "balanceDue")),
+    }).eq('id', id);
+
     return ok("Member updated", `/members/${id}`);
   });
 }
@@ -189,11 +209,9 @@ export async function updateMember(fd: FormData): Promise<ActionResult> {
 export async function deleteMember(fd: FormData): Promise<ActionResult> {
   return guarded(async () => {
     const id = str(fd, "id");
-    await mutate((db) => {
-      findMember(db, id);
-      db.members = db.members.filter((m) => m.id !== id);
-      db.bookings = db.bookings.filter((b) => b.memberId !== id);
-    });
+    await findMember(id); // Ensure exists
+    await supabase.from('members').delete().eq('id', id);
+    await supabase.from('bookings').delete().eq('memberId', id);
     return ok("Member deleted", "/members");
   });
 }
@@ -201,36 +219,44 @@ export async function deleteMember(fd: FormData): Promise<ActionResult> {
 export async function renewMembership(fd: FormData): Promise<ActionResult> {
   return guarded(async () => {
     const id = str(fd, "id");
-    const result = await mutate((db) => {
-      const m = findMember(db, id);
-      const plan = db.plans.find((p) => p.id === str(fd, "planId"));
-      if (!plan) throw new UserError("Select a plan");
-      const startDate = str(fd, "startDate") || today();
-      const paid = num(fd, "amountPaid");
-      const discount = num(fd, "discount");
-      const due = Math.max(0, plan.price - discount - paid);
-      m.planId = plan.id;
-      m.startDate = startDate;
-      m.endDate = addDays(startDate, plan.durationDays - 1);
-      m.status = "active";
-      m.frozenOn = "";
-      m.balanceDue = m.balanceDue + due;
-      if (paid > 0) {
-        db.payments.push({
-          id: nextId(db.payments, "P", 5),
-          memberId: m.id,
-          branchId: m.branchId,
-          date: today(),
-          amount: paid,
-          method: str(fd, "method") || "Cash",
-          type: "Renewal",
-          planId: plan.id,
-          note: [discount ? `Discount ₹${discount}` : "", str(fd, "note")].filter(Boolean).join(" · "),
-        });
-      }
-      return { name: m.name, endDate: m.endDate, due };
-    });
-    return ok(`Renewed ${result.name} till ${result.endDate}${result.due ? ` · ₹${result.due} added to dues` : ""}`);
+    const m = await findMember(id);
+    const planId = str(fd, "planId");
+    
+    const { data: plan } = await supabase.from('plans').select('*').eq('id', planId).single();
+    if (!plan) throw new UserError("Select a plan");
+
+    const startDate = str(fd, "startDate") || today();
+    const paid = num(fd, "amountPaid");
+    const discount = num(fd, "discount");
+    const due = Math.max(0, plan.price - discount - paid);
+    
+    const endDate = addDays(startDate, plan.durationDays - 1);
+    
+    await supabase.from('members').update({
+      planId: plan.id,
+      startDate,
+      endDate,
+      status: "active",
+      frozenOn: "",
+      balanceDue: m.balanceDue + due,
+    }).eq('id', id);
+
+    if (paid > 0) {
+      const pid = await getNextId('payments', 'P', 5);
+      await supabase.from('payments').insert({
+        id: pid,
+        memberId: m.id,
+        branchId: m.branchId,
+        date: today(),
+        amount: paid,
+        method: str(fd, "method") || "Cash",
+        type: "Renewal",
+        planId: plan.id,
+        note: [discount ? `Discount ₹${discount}` : "", str(fd, "note")].filter(Boolean).join(" · "),
+      });
+    }
+
+    return ok(`Renewed ${m.name} till ${endDate}${due ? ` · ₹${due} added to dues` : ""}`);
   });
 }
 
@@ -240,70 +266,63 @@ export async function recordPayment(fd: FormData): Promise<ActionResult> {
     const amount = num(fd, "amount");
     if (amount <= 0) throw new UserError("Enter an amount greater than 0");
     const type = str(fd, "type") || "Due Payment";
-    const name = await mutate((db) => {
-      const m = findMember(db, memberId);
-      if (type === "Due Payment") m.balanceDue = Math.max(0, m.balanceDue - amount);
-      db.payments.push({
-        id: nextId(db.payments, "P", 5),
-        memberId: m.id,
-        branchId: m.branchId,
-        date: str(fd, "date") || today(),
-        amount,
-        method: str(fd, "method") || "Cash",
-        type,
-        planId: m.planId,
-        note: str(fd, "note"),
-      });
-      return m.name;
+    
+    const m = await findMember(memberId);
+    if (type === "Due Payment") {
+      await supabase.from('members').update({ balanceDue: Math.max(0, m.balanceDue - amount) }).eq('id', memberId);
+    }
+    
+    const pid = await getNextId('payments', 'P', 5);
+    await supabase.from('payments').insert({
+      id: pid,
+      memberId: m.id,
+      branchId: m.branchId,
+      date: str(fd, "date") || today(),
+      amount,
+      method: str(fd, "method") || "Cash",
+      type,
+      planId: m.planId,
+      note: str(fd, "note"),
     });
-    return ok(`₹${amount} received from ${name}`);
+
+    return ok(`₹${amount} received from ${m.name}`);
   });
 }
 
 export async function deletePayment(fd: FormData): Promise<ActionResult> {
   return guarded(async () => {
     const id = str(fd, "id");
-    await mutate((db) => {
-      db.payments = db.payments.filter((p) => p.id !== id);
-    });
+    await supabase.from('payments').delete().eq('id', id);
     return ok("Payment deleted");
   });
 }
 
 export async function freezeMember(fd: FormData): Promise<ActionResult> {
   return guarded(async () => {
-    const name = await mutate((db) => {
-      const m = findMember(db, str(fd, "id"));
-      m.status = "frozen";
-      m.frozenOn = today();
-      return m.name;
-    });
-    return ok(`${name}'s membership is frozen. Days will be added back on unfreeze.`);
+    const id = str(fd, "id");
+    const m = await findMember(id);
+    await supabase.from('members').update({ status: "frozen", frozenOn: today() }).eq('id', id);
+    return ok(`${m.name}'s membership is frozen. Days will be added back on unfreeze.`);
   });
 }
 
 export async function unfreezeMember(fd: FormData): Promise<ActionResult> {
   return guarded(async () => {
-    const res = await mutate((db) => {
-      const m = findMember(db, str(fd, "id"));
-      const days = m.frozenOn ? Math.max(0, daysBetween(m.frozenOn, today())) : 0;
-      m.endDate = addDays(m.endDate, days);
-      m.status = "active";
-      m.frozenOn = "";
-      return { name: m.name, days };
-    });
-    return ok(`${res.name} unfrozen · ${res.days} day(s) added to membership`);
+    const id = str(fd, "id");
+    const m = await findMember(id);
+    const days = m.frozenOn ? Math.max(0, daysBetween(m.frozenOn, today())) : 0;
+    const endDate = addDays(m.endDate, days);
+    await supabase.from('members').update({ endDate, status: "active", frozenOn: "" }).eq('id', id);
+    return ok(`${m.name} unfrozen · ${days} day(s) added to membership`);
   });
 }
 
 export async function setMemberCancelled(fd: FormData): Promise<ActionResult> {
   return guarded(async () => {
+    const id = str(fd, "id");
     const cancel = str(fd, "cancel") === "1";
-    await mutate((db) => {
-      const m = findMember(db, str(fd, "id"));
-      m.status = cancel ? "cancelled" : "active";
-      m.frozenOn = "";
-    });
+    await findMember(id);
+    await supabase.from('members').update({ status: cancel ? "cancelled" : "active", frozenOn: "" }).eq('id', id);
     return ok(cancel ? "Membership cancelled" : "Membership reactivated");
   });
 }
@@ -313,28 +332,30 @@ export async function setMemberCancelled(fd: FormData): Promise<ActionResult> {
 export async function checkIn(fd: FormData): Promise<ActionResult> {
   return guarded(async () => {
     const memberId = parseMemberRef(fd.get("member") ?? fd.get("id"));
-    const msg = await mutate((db) => {
-      const m = findMember(db, memberId);
-      const s = settingsOf(db);
-      const st = displayStatus(m, s.reminderDays);
-      if (st === "expired") throw new UserError(`${m.name}'s membership expired on ${m.endDate}. Renew first.`);
-      if (st === "frozen") throw new UserError(`${m.name}'s membership is frozen. Unfreeze first.`);
-      if (st === "cancelled") throw new UserError(`${m.name}'s membership is cancelled.`);
-      const T = today();
-      if (db.attendance.some((a) => a.memberId === m.id && a.date === T)) {
-        throw new UserError(`${m.name} has already checked in today`);
-      }
-      db.attendance.push({
-        id: nextId(db.attendance, "A", 6),
-        memberId: m.id,
-        branchId: str(fd, "branchId") || m.branchId,
-        date: T,
-        time: nowTime(),
-      });
-      const left = daysBetween(T, m.endDate);
-      return `${m.name} checked in ✓ (${left} day${left === 1 ? "" : "s"} left${m.balanceDue ? ` · ₹${m.balanceDue} due` : ""})`;
+    const m = await findMember(memberId);
+    const s = await settingsOf();
+    const st = displayStatus(m, s.reminderDays);
+    if (st === "expired") throw new UserError(`${m.name}'s membership expired on ${m.endDate}. Renew first.`);
+    if (st === "frozen") throw new UserError(`${m.name}'s membership is frozen. Unfreeze first.`);
+    if (st === "cancelled") throw new UserError(`${m.name}'s membership is cancelled.`);
+    const T = today();
+    
+    const { data: existing } = await supabase.from('attendance').select('id').eq('memberId', m.id).eq('date', T);
+    if (existing && existing.length > 0) {
+      throw new UserError(`${m.name} has already checked in today`);
+    }
+    
+    const aid = await getNextId('attendance', 'A', 6);
+    await supabase.from('attendance').insert({
+      id: aid,
+      memberId: m.id,
+      branchId: str(fd, "branchId") || m.branchId,
+      date: T,
+      time: nowTime(),
     });
-    return ok(msg);
+    
+    const left = daysBetween(T, m.endDate);
+    return ok(`${m.name} checked in ✓ (${left} day${left === 1 ? "" : "s"} left${m.balanceDue ? ` · ₹${m.balanceDue} due` : ""})`);
   });
 }
 
@@ -347,15 +368,17 @@ export async function savePlan(fd: FormData): Promise<ActionResult> {
     const price = num(fd, "price");
     if (!name || durationDays <= 0 || price < 0) throw new UserError("Name, duration and price are required");
     const id = str(fd, "id");
-    await mutate((db) => {
-      const data = { name, durationDays, price, description: str(fd, "description"), features: "", active: fd.get("active") === "on" };
-      if (id) Object.assign(db.plans.find((p) => p.id === id) ?? {}, data);
-      else db.plans.push({ id: nextId(db.plans, "PL", 2), ...data });
-    });
+    const data = { name, durationDays, price, description: str(fd, "description"), features: "", active: fd.get("active") === "on" };
+    
+    if (id) {
+      await supabase.from('plans').update(data).eq('id', id);
+    } else {
+      const pid = await getNextId('plans', 'PL', 2);
+      await supabase.from('plans').insert({ id: pid, ...data });
+    }
     return ok(id ? "Plan updated" : "Plan created");
   });
 }
-
 // ---------- staff ----------
 
 export async function saveStaff(fd: FormData): Promise<ActionResult> {
@@ -363,20 +386,22 @@ export async function saveStaff(fd: FormData): Promise<ActionResult> {
     const name = str(fd, "name");
     if (!name) throw new UserError("Name is required");
     const id = str(fd, "id");
-    await mutate((db) => {
-      const data = {
-        name,
-        role: str(fd, "role"),
-        phone: str(fd, "phone"),
-        email: str(fd, "email"),
-        branchId: str(fd, "branchId"),
-        salary: num(fd, "salary"),
-        specialization: str(fd, "specialization"),
-        active: fd.get("active") === "on",
-      };
-      if (id) Object.assign(db.staff.find((s) => s.id === id) ?? {}, data);
-      else db.staff.push({ id: nextId(db.staff, "S", 3), joinDate: today(), ...data });
-    });
+    const data = {
+      name,
+      role: str(fd, "role"),
+      phone: str(fd, "phone"),
+      email: str(fd, "email"),
+      branchId: str(fd, "branchId"),
+      salary: num(fd, "salary"),
+      specialization: str(fd, "specialization"),
+      active: fd.get("active") === "on",
+    };
+    if (id) {
+      await supabase.from('staff').update(data).eq('id', id);
+    } else {
+      const sid = await getNextId('staff', 'S', 3);
+      await supabase.from('staff').insert({ id: sid, joinDate: today(), ...data });
+    }
     return ok(id ? "Staff updated" : "Staff added");
   });
 }
@@ -384,10 +409,8 @@ export async function saveStaff(fd: FormData): Promise<ActionResult> {
 export async function deleteStaff(fd: FormData): Promise<ActionResult> {
   return guarded(async () => {
     const id = str(fd, "id");
-    await mutate((db) => {
-      db.staff = db.staff.filter((s) => s.id !== id);
-      db.members.forEach((m) => m.trainerId === id && (m.trainerId = ""));
-    });
+    await supabase.from('staff').delete().eq('id', id);
+    await supabase.from('members').update({ trainerId: "" }).eq('trainerId', id);
     return ok("Staff removed");
   });
 }
@@ -399,21 +422,23 @@ export async function saveLead(fd: FormData): Promise<ActionResult> {
     const name = str(fd, "name");
     if (!name || !str(fd, "phone")) throw new UserError("Name and phone are required");
     const id = str(fd, "id");
-    await mutate((db) => {
-      const data = {
-        name,
-        phone: str(fd, "phone"),
-        email: str(fd, "email"),
-        branchId: str(fd, "branchId"),
-        source: str(fd, "source"),
-        interest: str(fd, "interest"),
-        status: str(fd, "status") || "New",
-        followUpDate: str(fd, "followUpDate"),
-        notes: str(fd, "notes"),
-      };
-      if (id) Object.assign(db.leads.find((l) => l.id === id) ?? {}, data);
-      else db.leads.push({ id: nextId(db.leads, "L", 3), createdAt: today(), ...data });
-    });
+    const data = {
+      name,
+      phone: str(fd, "phone"),
+      email: str(fd, "email"),
+      branchId: str(fd, "branchId"),
+      source: str(fd, "source"),
+      interest: str(fd, "interest"),
+      status: str(fd, "status") || "New",
+      followUpDate: str(fd, "followUpDate"),
+      notes: str(fd, "notes"),
+    };
+    if (id) {
+      await supabase.from('leads').update(data).eq('id', id);
+    } else {
+      const lid = await getNextId('leads', 'L', 3);
+      await supabase.from('leads').insert({ id: lid, createdAt: today(), ...data });
+    }
     return ok(id ? "Enquiry updated" : "Enquiry added");
   });
 }
@@ -421,12 +446,11 @@ export async function saveLead(fd: FormData): Promise<ActionResult> {
 export async function setLeadStatus(fd: FormData): Promise<ActionResult> {
   return guarded(async () => {
     const status = str(fd, "status");
-    await mutate((db) => {
-      const l = db.leads.find((x) => x.id === str(fd, "id"));
-      if (!l) throw new UserError("Enquiry not found");
-      l.status = status;
-      if (status === "Converted" || status === "Lost") l.followUpDate = "";
-    });
+    const id = str(fd, "id");
+    const { data: l } = await supabase.from('leads').select('*').eq('id', id).single();
+    if (!l) throw new UserError("Enquiry not found");
+    const followUpDate = (status === "Converted" || status === "Lost") ? "" : l.followUpDate;
+    await supabase.from('leads').update({ status, followUpDate }).eq('id', id);
     return ok(`Status changed to ${status}`);
   });
 }
@@ -434,9 +458,7 @@ export async function setLeadStatus(fd: FormData): Promise<ActionResult> {
 export async function deleteLead(fd: FormData): Promise<ActionResult> {
   return guarded(async () => {
     const id = str(fd, "id");
-    await mutate((db) => {
-      db.leads = db.leads.filter((l) => l.id !== id);
-    });
+    await supabase.from('leads').delete().eq('id', id);
     return ok("Enquiry deleted");
   });
 }
@@ -448,19 +470,21 @@ export async function saveClass(fd: FormData): Promise<ActionResult> {
     const name = str(fd, "name");
     if (!name || !str(fd, "time")) throw new UserError("Class name and time are required");
     const id = str(fd, "id");
-    await mutate((db) => {
-      const data = {
-        name,
-        branchId: str(fd, "branchId"),
-        trainerId: str(fd, "trainerId"),
-        day: str(fd, "day"),
-        time: str(fd, "time"),
-        durationMin: num(fd, "durationMin") || 60,
-        capacity: num(fd, "capacity") || 15,
-      };
-      if (id) Object.assign(db.classes.find((c) => c.id === id) ?? {}, data);
-      else db.classes.push({ id: nextId(db.classes, "C", 3), ...data });
-    });
+    const data = {
+      name,
+      branchId: str(fd, "branchId"),
+      trainerId: str(fd, "trainerId"),
+      day: str(fd, "day"),
+      time: str(fd, "time"),
+      durationMin: num(fd, "durationMin") || 60,
+      capacity: num(fd, "capacity") || 15,
+    };
+    if (id) {
+      await supabase.from('classes').update(data).eq('id', id);
+    } else {
+      const cid = await getNextId('classes', 'C', 3);
+      await supabase.from('classes').insert({ id: cid, ...data });
+    }
     return ok(id ? "Class updated" : "Class added to schedule");
   });
 }
@@ -468,10 +492,8 @@ export async function saveClass(fd: FormData): Promise<ActionResult> {
 export async function deleteClass(fd: FormData): Promise<ActionResult> {
   return guarded(async () => {
     const id = str(fd, "id");
-    await mutate((db) => {
-      db.classes = db.classes.filter((c) => c.id !== id);
-      db.bookings = db.bookings.filter((b) => b.classId !== id);
-    });
+    await supabase.from('classes').delete().eq('id', id);
+    await supabase.from('bookings').delete().eq('classId', id);
     return ok("Class removed");
   });
 }
@@ -481,38 +503,40 @@ export async function bookClass(fd: FormData): Promise<ActionResult> {
     const memberId = parseMemberRef(fd.get("member"));
     const classId = str(fd, "classId");
     const date = str(fd, "date");
-    const name = await mutate((db) => {
-      const c = db.classes.find((x) => x.id === classId);
-      if (!c) throw new UserError("Class not found");
-      const m = findMember(db, memberId);
-      const st = displayStatus(m, settingsOf(db).reminderDays);
-      if (st === "expired" || st === "cancelled" || st === "frozen") throw new UserError(`${m.name}'s membership is ${st}`);
-      const existing = db.bookings.filter((b) => b.classId === classId && b.date === date);
-      if (existing.some((b) => b.memberId === m.id)) throw new UserError(`${m.name} is already booked`);
-      if (existing.length >= c.capacity) throw new UserError("Class is full");
-      db.bookings.push({ id: nextId(db.bookings, "B", 5), classId, memberId: m.id, date, status: "booked" });
-      return m.name;
-    });
-    return ok(`${name} booked`);
+    
+    const { data: c } = await supabase.from('classes').select('*').eq('id', classId).single();
+    if (!c) throw new UserError("Class not found");
+    
+    const m = await findMember(memberId);
+    const s = await settingsOf();
+    const st = displayStatus(m, s.reminderDays);
+    if (st === "expired" || st === "cancelled" || st === "frozen") throw new UserError(`${m.name}'s membership is ${st}`);
+    
+    const { data: existing } = await supabase.from('bookings').select('*').eq('classId', classId).eq('date', date);
+    if ((existing || []).some((b: any) => b.memberId === m.id)) throw new UserError(`${m.name} is already booked`);
+    if ((existing || []).length >= c.capacity) throw new UserError("Class is full");
+    
+    const bid = await getNextId('bookings', 'B', 5);
+    await supabase.from('bookings').insert({ id: bid, classId, memberId: m.id, date, status: "booked" });
+    return ok(`${m.name} booked`);
   });
 }
 
 export async function cancelBooking(fd: FormData): Promise<ActionResult> {
   return guarded(async () => {
     const id = str(fd, "id");
-    await mutate((db) => {
-      db.bookings = db.bookings.filter((b) => b.id !== id);
-    });
+    await supabase.from('bookings').delete().eq('id', id);
     return ok("Booking cancelled");
   });
 }
 
 export async function toggleBookingAttended(fd: FormData): Promise<ActionResult> {
   return guarded(async () => {
-    await mutate((db) => {
-      const b = db.bookings.find((x) => x.id === str(fd, "id"));
-      if (b) b.status = b.status === "attended" ? "booked" : "attended";
-    });
+    const id = str(fd, "id");
+    const { data: b } = await supabase.from('bookings').select('status').eq('id', id).single();
+    if (b) {
+      await supabase.from('bookings').update({ status: b.status === "attended" ? "booked" : "attended" }).eq('id', id);
+    }
     return ok();
   });
 }
@@ -523,15 +547,14 @@ export async function addExpense(fd: FormData): Promise<ActionResult> {
   return guarded(async () => {
     const amount = num(fd, "amount");
     if (amount <= 0) throw new UserError("Enter an amount");
-    await mutate((db) => {
-      db.expenses.push({
-        id: nextId(db.expenses, "E", 4),
-        branchId: str(fd, "branchId"),
-        date: str(fd, "date") || today(),
-        category: str(fd, "category") || "Other",
-        amount,
-        note: str(fd, "note"),
-      });
+    const eid = await getNextId('expenses', 'E', 4);
+    await supabase.from('expenses').insert({
+      id: eid,
+      branchId: str(fd, "branchId"),
+      date: str(fd, "date") || today(),
+      category: str(fd, "category") || "Other",
+      amount,
+      note: str(fd, "note"),
     });
     return ok("Expense added");
   });
@@ -540,13 +563,10 @@ export async function addExpense(fd: FormData): Promise<ActionResult> {
 export async function deleteExpense(fd: FormData): Promise<ActionResult> {
   return guarded(async () => {
     const id = str(fd, "id");
-    await mutate((db) => {
-      db.expenses = db.expenses.filter((e) => e.id !== id);
-    });
+    await supabase.from('expenses').delete().eq('id', id);
     return ok("Expense deleted");
   });
 }
-
 // ---------- messaging (mock) ----------
 
 export async function logMessage(input: {
@@ -559,15 +579,14 @@ export async function logMessage(input: {
   body: string;
 }): Promise<ActionResult> {
   return guarded(async () => {
-    await mutate((db) => {
-      db.messages.push({
-        id: nextId(db.messages, "MSG", 5),
-        ...input,
-        sentAt: `${today()} ${nowTime()}`,
-        status: input.channel === "call" ? "Call logged (mock)" : "Sent (mock)",
-      });
+    const mid = await getNextId('messages', 'MSG', 5);
+    await supabase.from('messages').insert({
+      id: mid,
+      ...input,
+      sentAt: `${today()} ${nowTime()}`,
+      status: input.channel === "call" ? "Call logged (mock)" : "Sent (mock)",
     });
-    const label = { whatsapp: "WhatsApp message", sms: "SMS", email: "Email", call: "Call" }[input.channel] ?? "Message";
+    const label = { whatsapp: "WhatsApp message", sms: "SMS", email: "Email", call: "Call" }[input.channel as any] ?? "Message";
     return ok(input.channel === "call" ? `Call to ${input.recipientName} logged (mock)` : `${label} sent to ${input.recipientName} (mock)`);
   });
 }
@@ -578,31 +597,32 @@ export async function sendBulkReminder(fd: FormData): Promise<ActionResult> {
     const template = (str(fd, "template") || "expiry") as TemplateKey;
     const channel = str(fd, "channel") || "whatsapp";
     if (!ids.length) throw new UserError("No members selected");
-    const count = await mutate((db) => {
-      const s = settingsOf(db);
-      const plans = new Map(db.plans.map((p) => [p.id, p.name]));
-      let n = 0;
-      for (const id of ids) {
-        const m = db.members.find((x) => x.id === id);
-        if (!m) continue;
-        const ctx = { name: m.name, gymName: s.gymName, planName: plans.get(m.planId), endDate: m.endDate, due: m.balanceDue };
-        db.messages.push({
-          id: nextId(db.messages, "MSG", 5),
-          channel,
-          recipientName: m.name,
-          to: channel === "email" ? m.email : m.phone,
-          refType: "member",
-          refId: m.id,
-          subject: TEMPLATES[template].subject(ctx),
-          body: TEMPLATES[template].body(ctx),
-          sentAt: `${today()} ${nowTime()}`,
-          status: "Sent (mock)",
-        });
-        n++;
-      }
-      return n;
-    });
-    return ok(`${count} ${channel === "email" ? "emails" : "WhatsApp reminders"} sent (mock)`);
+    
+    const s = await settingsOf();
+    const { data: plansData } = await supabase.from('plans').select('*');
+    const plans = new Map((plansData || []).map((p: any) => [p.id, p.name]));
+    
+    let n = 0;
+    for (const id of ids) {
+      const m = await findMember(id).catch(() => null);
+      if (!m) continue;
+      const ctx = { name: m.name, gymName: s.gymName, planName: plans.get(m.planId), endDate: m.endDate, due: m.balanceDue };
+      const mid = await getNextId('messages', 'MSG', 5);
+      await supabase.from('messages').insert({
+        id: mid,
+        channel,
+        recipientName: m.name,
+        to: channel === "email" ? m.email : m.phone,
+        refType: "member",
+        refId: m.id,
+        subject: TEMPLATES[template].subject(ctx as any),
+        body: TEMPLATES[template].body(ctx as any),
+        sentAt: `${today()} ${nowTime()}`,
+        status: "Sent (mock)",
+      });
+      n++;
+    }
+    return ok(`${n} ${channel === "email" ? "emails" : "WhatsApp reminders"} sent (mock)`);
   });
 }
 
@@ -610,58 +630,55 @@ export async function sendBulkReminder(fd: FormData): Promise<ActionResult> {
 
 export async function saveSettings(fd: FormData): Promise<ActionResult> {
   return guarded(async () => {
-    await mutate((db) => {
-      for (const key of ["gymName", "ownerName", "reminderDays", "countryCode", "dbProvider", "googleSheetId", "senderEmail", "gstNumber", "gstRate", "sacCode"]) {
-        const value = str(fd, key);
-        const row = db.settings.find((s) => s.key === key);
-        if (row) row.value = value;
-        else db.settings.push({ key, value });
-      }
-      
-      const gstEnabled = fd.get("gstEnabled") === "on" ? "true" : "false";
-      const row = db.settings.find((s) => s.key === "gstEnabled");
-      if (row) row.value = gstEnabled;
-      else db.settings.push({ key: "gstEnabled", value: gstEnabled });
-    });
+    const keys = ["gymName", "ownerName", "reminderDays", "countryCode", "dbProvider", "googleSheetId", "senderEmail", "gstNumber", "gstRate", "sacCode"];
+    for (const key of keys) {
+      const value = str(fd, key);
+      const { data } = await supabase.from('settings').select('key').eq('key', key).single();
+      if (data) await supabase.from('settings').update({ value }).eq('key', key);
+      else await supabase.from('settings').insert({ key, value });
+    }
+    
+    const gstEnabled = fd.get("gstEnabled") === "on" ? "true" : "false";
+    const { data } = await supabase.from('settings').select('key').eq('key', "gstEnabled").single();
+    if (data) await supabase.from('settings').update({ value: gstEnabled }).eq('key', "gstEnabled");
+    else await supabase.from('settings').insert({ key: "gstEnabled", value: gstEnabled });
+    
     return ok("Settings saved");
   });
 }
 
 export async function saveBranch(fd: FormData): Promise<ActionResult> {
   return guarded(async () => {
-    await mutate((db) => {
-      const b = db.branches.find((x) => x.id === str(fd, "id"));
-      if (!b) throw new UserError("Branch not found");
-      Object.assign(b, { name: str(fd, "name"), address: str(fd, "address"), phone: str(fd, "phone"), manager: str(fd, "manager") });
-    });
+    const id = str(fd, "id");
+    const { data: b } = await supabase.from('branches').select('id').eq('id', id).single();
+    if (!b) throw new UserError("Branch not found");
+    await supabase.from('branches').update({ name: str(fd, "name"), address: str(fd, "address"), phone: str(fd, "phone"), manager: str(fd, "manager") }).eq('id', id);
     return ok("Branch updated");
   });
 }
 
 export async function resetDemoData(): Promise<ActionResult> {
   return guarded(async () => {
-    await resetDb();
-    return ok("Demo data regenerated");
+    // Demo data functionality not fully reimplemented with supabase here
+    return ok("Demo data functionality not available in Supabase mode");
   });
 }
 
 export async function completeOnboarding(fd: FormData): Promise<ActionResult> {
   return guarded(async () => {
-    await mutate((db) => {
-      const keys = ["gymName", "ownerName", "countryCode", "gstNumber", "gstRate"];
-      for (const key of keys) {
-        const value = str(fd, key);
-        if (value) {
-          const row = db.settings.find((s) => s.key === key);
-          if (row) row.value = value;
-          else db.settings.push({ key, value });
-        }
+    const keys = ["gymName", "ownerName", "countryCode", "gstNumber", "gstRate"];
+    for (const key of keys) {
+      const value = str(fd, key);
+      if (value) {
+        const { data } = await supabase.from('settings').select('key').eq('key', key).single();
+        if (data) await supabase.from('settings').update({ value }).eq('key', key);
+        else await supabase.from('settings').insert({ key, value });
       }
-      
-      const row = db.settings.find((s) => s.key === "onboardingComplete");
-      if (row) row.value = "true";
-      else db.settings.push({ key: "onboardingComplete", value: "true" });
-    });
+    }
+    const { data } = await supabase.from('settings').select('key').eq('key', 'onboardingComplete').single();
+    if (data) await supabase.from('settings').update({ value: "true" }).eq('key', 'onboardingComplete');
+    else await supabase.from('settings').insert({ key: 'onboardingComplete', value: "true" });
+    
     return ok("Welcome aboard!");
   });
 }
@@ -670,27 +687,24 @@ export async function sendVerificationOTP(email: string): Promise<{ ok: boolean;
   try {
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     
-    // Store OTP temporarily in settings (mock DB)
     let senderEmail = "onboarding@cloverstudio.art";
     let gymName = "Sweat CRM";
 
-    await mutate((db) => {
-      const row = db.settings.find(s => s.key === "temp_otp");
-      if (row) row.value = otp;
-      else db.settings.push({ key: "temp_otp", value: otp });
-      
-      const emailRow = db.settings.find(s => s.key === "temp_email");
-      if (emailRow) emailRow.value = email;
-      else db.settings.push({ key: "temp_email", value: email });
-      
-      const sRow = db.settings.find(s => s.key === "senderEmail");
-      if (sRow && sRow.value) senderEmail = sRow.value;
-      if (senderEmail.includes("@gmail.com") || senderEmail.includes("@yahoo.com")) {
-        senderEmail = "onboarding@cloverstudio.art";
-      }
-      const gRow = db.settings.find(s => s.key === "gymName");
-      if (gRow && gRow.value) gymName = gRow.value;
-    });
+    const { data: rRow } = await supabase.from('settings').select('key').eq('key', 'temp_otp').single();
+    if (rRow) await supabase.from('settings').update({ value: otp }).eq('key', 'temp_otp');
+    else await supabase.from('settings').insert({ key: 'temp_otp', value: otp });
+    
+    const { data: eRow } = await supabase.from('settings').select('key').eq('key', 'temp_email').single();
+    if (eRow) await supabase.from('settings').update({ value: email }).eq('key', 'temp_email');
+    else await supabase.from('settings').insert({ key: 'temp_email', value: email });
+    
+    const { data: sRow } = await supabase.from('settings').select('value').eq('key', 'senderEmail').single();
+    if (sRow && sRow.value) senderEmail = sRow.value;
+    if (senderEmail.includes("@gmail.com") || senderEmail.includes("@yahoo.com")) {
+      senderEmail = "onboarding@cloverstudio.art";
+    }
+    const { data: gRow } = await supabase.from('settings').select('value').eq('key', 'gymName').single();
+    if (gRow && gRow.value) gymName = gRow.value;
 
     if (process.env.RESEND_API_KEY) {
       const { Resend } = await import('resend');
@@ -708,8 +722,7 @@ export async function sendVerificationOTP(email: string): Promise<{ ok: boolean;
       }
     } else {
       console.log(`[MOCK EMAIL] To: ${email}, Subject: OTP, Body: ${otp}`);
-      // In mock mode, we'll cheat and return the OTP so the UI can auto-fill it for testing if needed
-      return { ok: true, message: "Mock OTP sent (check console)", error: otp }; // stuffing it in error for demo purposes
+      return { ok: true, message: "Mock OTP sent (check console)", error: otp }; 
     }
     
     return { ok: true, message: "OTP sent successfully" };
@@ -719,15 +732,8 @@ export async function sendVerificationOTP(email: string): Promise<{ ok: boolean;
 }
 
 export async function verifyOTP(code: string): Promise<{ ok: boolean; error?: string }> {
-  let isValid = false;
-  await mutate((db) => {
-    const row = db.settings.find(s => s.key === "temp_otp");
-    if (row && row.value === code) {
-      isValid = true;
-    }
-  });
-  
-  if (isValid) {
+  const { data } = await supabase.from('settings').select('value').eq('key', 'temp_otp').single();
+  if (data && data.value === code) {
     return { ok: true };
   }
   return { ok: false, error: "Invalid OTP code" };
@@ -741,15 +747,13 @@ export async function sendTestEmail(fd: FormData): Promise<ActionResult> {
     let senderEmail = "onboarding@cloverstudio.art";
     let gymName = "Sweat CRM";
 
-    await mutate((db) => {
-      const sRow = db.settings.find(s => s.key === "senderEmail");
-      if (sRow && sRow.value) senderEmail = sRow.value;
-      if (senderEmail.includes("@gmail.com") || senderEmail.includes("@yahoo.com")) {
-        senderEmail = "onboarding@cloverstudio.art";
-      }
-      const gRow = db.settings.find(s => s.key === "gymName");
-      if (gRow && gRow.value) gymName = gRow.value;
-    });
+    const { data: sRow } = await supabase.from('settings').select('value').eq('key', 'senderEmail').single();
+    if (sRow && sRow.value) senderEmail = sRow.value;
+    if (senderEmail.includes("@gmail.com") || senderEmail.includes("@yahoo.com")) {
+      senderEmail = "onboarding@cloverstudio.art";
+    }
+    const { data: gRow } = await supabase.from('settings').select('value').eq('key', 'gymName').single();
+    if (gRow && gRow.value) gymName = gRow.value;
 
     if (process.env.RESEND_API_KEY) {
       const { Resend } = await import('resend');
@@ -775,19 +779,11 @@ export async function sendTestEmail(fd: FormData): Promise<ActionResult> {
 }
 
 export async function verifyAndSaveLoginEmail(email: string, code: string): Promise<{ ok: boolean; error?: string }> {
-  let isValid = false;
-  await mutate((db) => {
-    const row = db.settings.find(s => s.key === "temp_otp");
-    if (row && row.value === code) {
-      isValid = true;
-      // Save it as the official login email
-      const loginRow = db.settings.find(s => s.key === "ownerLoginEmail");
-      if (loginRow) loginRow.value = email;
-      else db.settings.push({ key: "ownerLoginEmail", value: email });
-    }
-  });
-  
-  if (isValid) {
+  const { data: rRow } = await supabase.from('settings').select('value').eq('key', 'temp_otp').single();
+  if (rRow && rRow.value === code) {
+    const { data: loginRow } = await supabase.from('settings').select('key').eq('key', 'ownerLoginEmail').single();
+    if (loginRow) await supabase.from('settings').update({ value: email }).eq('key', 'ownerLoginEmail');
+    else await supabase.from('settings').insert({ key: 'ownerLoginEmail', value: email });
     return { ok: true };
   }
   return { ok: false, error: "Invalid OTP code" };
@@ -798,33 +794,28 @@ export async function requestLoginOTP(email: string): Promise<{ ok: boolean; err
   let gymName = "Sweat CRM";
   let senderEmail = "onboarding@cloverstudio.art";
 
-  await mutate((db) => {
-    const sRow = db.settings.find(s => s.key === "senderEmail");
-    if (sRow && sRow.value) senderEmail = sRow.value;
-    // Resend DMARC protection: never send from gmail/yahoo
-    if (senderEmail.includes("@gmail.com") || senderEmail.includes("@yahoo.com")) {
-      senderEmail = "onboarding@cloverstudio.art";
-    }
-    const gRow = db.settings.find(s => s.key === "gymName");
-    if (gRow && gRow.value) gymName = gRow.value;
-    
-    const ownerEmailRow = db.settings.find(s => s.key === "ownerLoginEmail");
-    const authorizedEmail = ownerEmailRow?.value || "atharvadeshmukh.dev@gmail.com";
-    if (authorizedEmail === email) {
-      isAuthorized = true;
-    }
-  });
+  const { data: sRow } = await supabase.from('settings').select('value').eq('key', 'senderEmail').single();
+  if (sRow && sRow.value) senderEmail = sRow.value;
+  if (senderEmail.includes("@gmail.com") || senderEmail.includes("@yahoo.com")) {
+    senderEmail = "onboarding@cloverstudio.art";
+  }
+  const { data: gRow } = await supabase.from('settings').select('value').eq('key', 'gymName').single();
+  if (gRow && gRow.value) gymName = gRow.value;
+  
+  const { data: ownerEmailRow } = await supabase.from('settings').select('value').eq('key', 'ownerLoginEmail').single();
+  const authorizedEmail = ownerEmailRow?.value || "atharvadeshmukh.dev@gmail.com";
+  if (authorizedEmail === email) {
+    isAuthorized = true;
+  }
 
   if (!isAuthorized) {
     return { ok: false, error: "This email is not registered as the Owner Login Email." };
   }
 
   const otp = Math.floor(100000 + Math.random() * 900000).toString();
-  await mutate((db) => {
-    const row = db.settings.find(s => s.key === "temp_login_otp");
-    if (row) row.value = otp;
-    else db.settings.push({ key: "temp_login_otp", value: otp });
-  });
+  const { data: otpRow } = await supabase.from('settings').select('key').eq('key', 'temp_login_otp').single();
+  if (otpRow) await supabase.from('settings').update({ value: otp }).eq('key', 'temp_login_otp');
+  else await supabase.from('settings').insert({ key: 'temp_login_otp', value: otp });
 
   if (process.env.RESEND_API_KEY) {
     try {
@@ -843,35 +834,28 @@ export async function requestLoginOTP(email: string): Promise<{ ok: boolean; err
       return { ok: false, error: e.message };
     }
   } else {
-    // Mock autofill if no key
     return { ok: true, error: otp };
   }
 }
 
 export async function loginWithOTP(email: string, code: string): Promise<{ ok: boolean; error?: string }> {
-  let isValid = false;
-  await mutate((db) => {
-    const emailRow = db.settings.find(s => s.key === "ownerLoginEmail");
-    const authorizedEmail = emailRow?.value || "atharvadeshmukh.dev@gmail.com";
-    const otpRow = db.settings.find(s => s.key === "temp_login_otp");
-    
-    if (authorizedEmail === email && otpRow && otpRow.value === code) {
-      isValid = true;
-      otpRow.value = ""; // Clear OTP
-    }
-  });
-
-  if (!isValid) return { ok: false, error: "Invalid or expired login code." };
-
-  const store = await cookies();
-  store.set(SESSION_COOKIE, sessionToken(), {
-    httpOnly: true,
-    sameSite: "lax",
-    path: "/",
-    maxAge: 60 * 60 * 24 * 7,
-  });
+  const { data: emailRow } = await supabase.from('settings').select('value').eq('key', 'ownerLoginEmail').single();
+  const authorizedEmail = emailRow?.value || "atharvadeshmukh.dev@gmail.com";
+  const { data: otpRow } = await supabase.from('settings').select('value').eq('key', 'temp_login_otp').single();
   
-  redirect("/dashboard");
+  if (authorizedEmail === email && otpRow && otpRow.value === code) {
+    await supabase.from('settings').update({ value: "" }).eq('key', 'temp_login_otp');
+    const store = await cookies();
+    store.set(SESSION_COOKIE, sessionToken(), {
+      httpOnly: true,
+      sameSite: "lax",
+      path: "/",
+      maxAge: 60 * 60 * 24 * 7,
+    });
+    redirect("/dashboard");
+  }
+
+  return { ok: false, error: "Invalid or expired login code." };
 }
 
 export async function logCallOutcome(fd: FormData): Promise<ActionResult> {
@@ -880,38 +864,31 @@ export async function logCallOutcome(fd: FormData): Promise<ActionResult> {
     const outcome = str(fd, "outcome");
     const notes = str(fd, "notes");
     
-    // Outcome mappings to followUpDate logic
     let followUpDays = 0;
     if (outcome === "will_pay") followUpDays = 3;
     else if (outcome === "no_answer") followUpDays = 1;
     else if (outcome === "freeze") followUpDays = 0;
     else if (outcome === "cancel") followUpDays = 0;
-    else followUpDays = 7; // other
+    else followUpDays = 7; 
 
     const followUpDateStr = followUpDays > 0 ? addDays(today(), followUpDays) : "";
 
-    await mutate((db) => {
-      const staffId = "admin"; // In a real app, this comes from session
-      const id = nextId(db.callLogs, "C", 5);
-      
-      db.callLogs.push({
-        id,
-        memberId,
-        staffId,
-        outcome,
-        notes,
-        followUpDate: followUpDateStr,
-        createdAt: new Date().toISOString(),
-      });
-      
-      const m = db.members.find(x => x.id === memberId);
-      if (m && followUpDateStr) {
-         // Maybe add a followUpDate field to member as well, but for now it's in callLogs
-         // Wait, the user wants "so promised dates resurface automatically".
-         // Let's add followUpDate to Member! Wait, we didn't add followUpDate to Member, only assignedStaffId. Let's add followUpDate to Member type and schema!
-         (m as any).followUpDate = followUpDateStr;
-      }
+    const staffId = "admin";
+    const cid = await getNextId('callLogs', 'C', 5);
+    
+    await supabase.from('callLogs').insert({
+      id: cid,
+      memberId,
+      staffId,
+      outcome,
+      notes,
+      followUpDate: followUpDateStr,
+      createdAt: new Date().toISOString(),
     });
+    
+    if (followUpDateStr) {
+      await supabase.from('members').update({ followUpDate: followUpDateStr }).eq('id', memberId);
+    }
 
     revalidatePath("/members");
     revalidatePath(`/members/${memberId}`);

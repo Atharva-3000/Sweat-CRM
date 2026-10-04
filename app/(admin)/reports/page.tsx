@@ -1,24 +1,29 @@
-import { getDb } from "@/lib/db";
+import { supabase } from "@/lib/supabase";
 import { getBranchScope } from "@/lib/auth";
 import { Card, PageHeader, BarChart, StatCard } from "@/components/ui";
 import { formatINR, lastNMonths, monthKey, today } from "@/lib/dates";
 import { ArrowUpRight, ArrowDownRight, Activity } from "lucide-react";
 
 export default async function ReportsPage() {
-  const db = await getDb();
   const scope = await getBranchScope();
   const T = today();
+  
+  const { data: paymentsData } = await supabase.from('payments').select('*');
+  const payments = paymentsData || [];
+  
+  const { data: expensesData } = await supabase.from('expenses').select('*');
+  const expenses = expensesData || [];
   
   const months = lastNMonths(6, T);
   
   const monthlyData = months.map(m => {
-    const rev = db.payments
-      .filter(p => (scope === "all" || p.branchId === scope) && p.date.startsWith(m))
-      .reduce((sum, p) => sum + p.amount, 0);
+    const rev = payments
+      .filter((p: any) => (scope === "all" || p.branchId === scope) && p.date.startsWith(m))
+      .reduce((sum: any, p: any) => sum + p.amount, 0);
       
-    const exp = db.expenses
-      .filter(e => (scope === "all" || e.branchId === scope) && e.date.startsWith(m))
-      .reduce((sum, e) => sum + e.amount, 0);
+    const exp = expenses
+      .filter((e: any) => (scope === "all" || e.branchId === scope) && e.date.startsWith(m))
+      .reduce((sum: any, e: any) => sum + e.amount, 0);
       
     const date = new Date(`${m}-01`);
     const label = date.toLocaleDateString("en-US", { month: "short", year: "2-digit" });

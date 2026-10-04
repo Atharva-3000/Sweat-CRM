@@ -1,4 +1,4 @@
-import { getDb } from "@/lib/db";
+import { supabase } from "@/lib/supabase";
 import { requireAdmin } from "@/lib/auth";
 import { Card, PageHeader } from "@/components/ui";
 import { ActionForm, SubmitButton, ModalForm } from "@/components/action-form";
@@ -9,8 +9,9 @@ import { LoginEmailSetup } from "@/components/login-email-setup";
 
 export default async function SettingsPage() {
   await requireAdmin();
-  const db = await getDb();
-  const s = settingsOf(db);
+  
+  const { data: _settingsData } = await supabase.from('settings').select('*');
+  const s = (_settingsData || []).reduce((acc: any, row: any) => ({ ...acc, [row.key]: row.value }), {} as any);
 
   return (
     <div className="space-y-6 max-w-2xl mx-auto">

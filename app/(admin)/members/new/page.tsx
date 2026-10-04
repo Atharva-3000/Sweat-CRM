@@ -1,4 +1,4 @@
-import { getDb } from "@/lib/db";
+import { supabase } from "@/lib/supabase";
 import { getBranchScope } from "@/lib/auth";
 import { Card, PageHeader } from "@/components/ui";
 import { ActionForm, SubmitButton } from "@/components/action-form";
@@ -7,16 +7,21 @@ import { today } from "@/lib/dates";
 
 export default async function NewMemberPage({ searchParams }: { searchParams: Promise<{ leadId?: string; planId?: string }> }) {
   const { leadId, planId } = await searchParams;
-  const db = await getDb();
   const scope = await getBranchScope();
   
-  const branches = db.branches;
-  const plans = db.plans.filter(p => p.active);
-  const trainers = db.staff.filter(s => s.role === "Trainer" && s.active);
+  const { data: branchesData } = await supabase.from('branches').select('*');
+  const branches = branchesData || [];
+  
+  const { data: plansData } = await supabase.from('plans').select('*').eq('active', true);
+  const plans = plansData || [];
+  
+  const { data: trainersData } = await supabase.from('staff').select('*').eq('role', 'Trainer').eq('active', true);
+  const trainers = trainersData || [];
   
   let lead = null;
   if (leadId) {
-    lead = db.leads.find(l => l.id === leadId);
+    const { data: leadData } = await supabase.from('leads').select('*').eq('id', leadId).single();
+    lead = leadData;
   }
 
   return (

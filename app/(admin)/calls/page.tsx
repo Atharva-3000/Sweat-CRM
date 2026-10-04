@@ -1,4 +1,4 @@
-import { getDb } from "@/lib/db";
+import { supabase } from "@/lib/supabase";
 import { getBranchScope } from "@/lib/auth";
 import { PageHeader, Card, EmptyState, Avatar } from "@/components/ui";
 import Link from "next/link";
@@ -8,15 +8,20 @@ import { today } from "@/lib/dates";
 export const metadata = { title: "Call Logs & Queue" };
 
 export default async function CallsPage() {
-  const db = await getDb();
+  const { data: _membersData } = await supabase.from('members').select('*');
+  const _members = _membersData || [];
+  const { data: _staffData } = await supabase.from('staff').select('*');
+  const _staff = _staffData || [];
+  const { data: _callLogsData } = await supabase.from('callLogs').select('*');
+  const _callLogs = _callLogsData || [];
   const scope = await getBranchScope();
   const T = today();
   
-  const membersMap = new Map(db.members.map(m => [m.id, m]));
-  const staffMap = new Map(db.staff.map(s => [s.id, s.name]));
+  const membersMap = new Map(_members.map(m => [m.id, m]));
+  const staffMap = new Map(_staff.map(s => [s.id, s.name]));
 
   // Queue: Members who need a follow-up today or earlier, and are not cancelled/frozen
-  let queue = db.members.filter(m => {
+  let queue = _members.filter(m => {
     if (scope !== "all" && m.branchId !== scope) return false;
     if (m.status === "cancelled") return false;
     if (!m.followUpDate) return false;
@@ -28,7 +33,7 @@ export default async function CallsPage() {
   queue.sort((a, b) => a.followUpDate!.localeCompare(b.followUpDate!));
 
   // History: All call logs
-  let logs = db.callLogs || [];
+  let logs = _callLogs || [];
   if (scope !== "all") {
     logs = logs.filter(l => {
        const m = membersMap.get(l.memberId);

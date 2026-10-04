@@ -1,14 +1,15 @@
-import { getDb } from "@/lib/db";
+import { supabase } from "@/lib/supabase";
 import { getBranchScope } from "@/lib/auth";
 import { Card, PageHeader } from "@/components/ui";
 import { CheckCircle2 } from "lucide-react";
 import Link from "next/link";
 
 export default async function PlansPage() {
-  const db = await getDb();
+  const { data: _plansData } = await supabase.from('plans').select('*');
+  const _plans = _plansData || [];
   await getBranchScope(); // Ensure auth
   
-  const plans = db.plans;
+  const plans = _plans;
 
   return (
     <div className="space-y-6">
@@ -33,7 +34,7 @@ export default async function PlansPage() {
                <div className="flex-1">
                  <p className="text-sm font-medium text-slate-900 mb-3">Includes:</p>
                  <ul className="space-y-2 text-sm text-slate-500 dark:text-slate-400">
-                    {features.map((f, i) => (
+                    {features.map((f: string, i: number) => (
                       <li key={i} className="flex gap-2 items-start">
                         <CheckCircle2 className="h-4 w-4 text-indigo-500 shrink-0 mt-0.5" />
                         <span>{f}</span>

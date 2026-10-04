@@ -1,4 +1,4 @@
-import { getDb } from "@/lib/db";
+import { supabase } from "@/lib/supabase";
 import { requireAdmin } from "@/lib/auth";
 import { settingsOf } from "@/lib/queries";
 import { notFound } from "next/navigation";
@@ -7,11 +7,10 @@ import { ReceiptClient } from "./receipt-client";
 
 export async function generateMetadata({ params }: { params: Promise<{ paymentId: string }> }) {
   const { paymentId } = await params;
-  const db = await getDb();
-  const payment = db.payments.find(p => p.id === paymentId);
+  const { data: payment } = await supabase.from('payments').select('*').eq('id', paymentId).single();
   if (!payment) return { title: "Receipt" };
   
-  const member = db.members.find(m => m.id === payment.memberId);
+  const { data: member } = await supabase.from('members').select('*').eq('id', payment.memberId).single();
   const nameStr = member ? member.name.split(' ')[0].toLowerCase().replace(/[^a-z0-9]/g, '') : "member";
   
   // parse YYYY-MM-DD
@@ -30,15 +29,14 @@ export default async function ReceiptPage({ params }: { params: Promise<{ paymen
   await requireAdmin();
   const { paymentId } = await params;
   
-  const db = await getDb();
-  const payment = db.payments.find(p => p.id === paymentId);
+  const { data: payment } = await supabase.from('payments').select('*').eq('id', paymentId).single();
   if (!payment) notFound();
   
-  const member = db.members.find(m => m.id === payment.memberId);
+  const { data: member } = await supabase.from('members').select('*').eq('id', payment.memberId).single();
   if (!member) notFound();
   
-  const s = settingsOf(db);
-  const branch = db.branches.find(b => b.id === payment.branchId);
+  const s = await settingsOf();
+  const { data: branch } = await supabase.from('branches').select('*').eq('id', payment.branchId).maybeSingle();
 
   // If GST is enabled, calculate the split
   let taxableAmount = payment.amount;

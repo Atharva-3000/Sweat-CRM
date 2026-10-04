@@ -2,26 +2,32 @@ import { Providers } from "@/components/providers";
 import { Shell } from "@/components/shell";
 import { Onboarding } from "@/components/onboarding";
 import { requireAdmin, getBranchScope } from "@/lib/auth";
-import { getDb } from "@/lib/db";
+import { supabase } from "@/lib/supabase";
 import { memberViews, settingsOf } from "@/lib/queries";
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
   await requireAdmin();
-  const db = await getDb();
   const scope = await getBranchScope();
-  const s = settingsOf(db);
+  const s = await settingsOf();
 
   // Compute badges for navigation
-  const mViews = memberViews(db, scope);
+  const mViews = await memberViews(scope);
   const alerts = mViews.filter((m) => m.display === "expired" || m.display === "expiring" || m.balanceDue > 0).length;
-  const leads = db.leads.filter((l) => (scope === "all" || l.branchId === scope) && (l.status === "New" || l.status === "Contacted")).length;
+  
+  let leadsQuery = supabase.from('leads').select('*').in('status', ['New', 'Contacted']);
+  if (scope !== "all") leadsQuery = leadsQuery.eq('branchId', scope);
+  const { data: leadsData } = await leadsQuery;
+  const leads = (leadsData || []).length;
+  
+  const { data: branchesData } = await supabase.from('branches').select('id, name');
+  const branches = branchesData || [];
 
   return (
     <Providers
       app={{
         gymName: s.gymName,
         countryCode: s.countryCode,
-        branches: db.branches.map((b) => ({ id: b.id, name: b.name })),
+        branches: branches,
       }}
     >
       {!s.onboardingComplete ? (

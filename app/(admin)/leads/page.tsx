@@ -1,4 +1,4 @@
-import { getDb } from "@/lib/db";
+import { supabase } from "@/lib/supabase";
 import { getBranchScope } from "@/lib/auth";
 import { Card, PageHeader, Badge } from "@/components/ui";
 import { ContactButtons } from "@/components/contact-buttons";
@@ -9,14 +9,17 @@ import Link from "next/link";
 import { ArrowRight } from "lucide-react";
 
 export default async function LeadsPage() {
-  const db = await getDb();
+  const { data: _leadsData } = await supabase.from('leads').select('*');
+  const _leads = _leadsData || [];
+  const { data: _branchesData } = await supabase.from('branches').select('*');
+  const _branches = _branchesData || [];
   const scope = await getBranchScope();
 
-  const leads = db.leads
+  const leads = _leads
     .filter(l => scope === "all" || l.branchId === scope)
     .sort((a, b) => b.id.localeCompare(a.id));
 
-  const branches = db.branches;
+  const branches = _branches;
 
   const statusColors: Record<string, string> = {
     "New": "bg-blue-100 text-blue-700",

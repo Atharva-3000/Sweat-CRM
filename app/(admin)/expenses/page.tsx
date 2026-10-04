@@ -1,4 +1,4 @@
-import { getDb } from "@/lib/db";
+import { supabase } from "@/lib/supabase";
 import { getBranchScope } from "@/lib/auth";
 import { Card, PageHeader, Badge } from "@/components/ui";
 import { ModalForm } from "@/components/action-form";
@@ -6,16 +6,19 @@ import { addExpense } from "@/app/actions";
 import { formatINR, monthKey, today } from "@/lib/dates";
 
 export default async function ExpensesPage() {
-  const db = await getDb();
+  const { data: _expensesData } = await supabase.from('expenses').select('*');
+  const _expenses = _expensesData || [];
+  const { data: _branchesData } = await supabase.from('branches').select('*');
+  const _branches = _branchesData || [];
   const scope = await getBranchScope();
   const T = today();
   const currentMonth = monthKey(T);
 
-  const expenses = db.expenses
+  const expenses = _expenses
     .filter(e => scope === "all" || e.branchId === scope)
     .sort((a, b) => b.id.localeCompare(a.id));
 
-  const branches = db.branches;
+  const branches = _branches;
 
   const thisMonthTotal = expenses
     .filter(e => e.date.startsWith(currentMonth))

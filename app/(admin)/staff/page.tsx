@@ -1,13 +1,16 @@
-import { getDb } from "@/lib/db";
+import { supabase } from "@/lib/supabase";
 import { getBranchScope } from "@/lib/auth";
 import { Card, PageHeader, Avatar, Badge } from "@/components/ui";
 
 export default async function StaffPage() {
-  const db = await getDb();
+  const { data: _staffData } = await supabase.from('staff').select('*');
+  const _staff = _staffData || [];
+  const { data: _branchesData } = await supabase.from('branches').select('*');
+  const _branches = _branchesData || [];
   const scope = await getBranchScope();
   
-  const staff = db.staff.filter(s => scope === "all" || s.branchId === scope);
-  const branches = db.branches;
+  const staff = _staff.filter(s => scope === "all" || s.branchId === scope);
+  const branches = _branches;
 
   return (
     <div className="space-y-6">

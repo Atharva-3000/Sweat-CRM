@@ -1,4 +1,4 @@
-import { getDb } from "@/lib/db";
+import { supabase } from "@/lib/supabase";
 import { notFound } from "next/navigation";
 import { Card, PageHeader, StatusBadge, Avatar, EmptyState } from "@/components/ui";
 import { formatINR, today } from "@/lib/dates";
@@ -9,21 +9,26 @@ import { renewMembership, recordPayment, freezeMember, unfreezeMember, setMember
 
 export default async function MemberPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const db = await getDb();
-  const m = db.members.find((x) => x.id === id);
+  
+  const { data: memberData } = await supabase.from('members').select('*').eq('id', id).single();
+  const m = memberData;
   if (!m) notFound();
 
-  const s = settingsOf(db);
+  const s = await settingsOf();
   const T = today();
   const status = displayStatus(m, s.reminderDays, T);
   
-  const plan = db.plans.find(p => p.id === m.planId);
-  const branch = db.branches.find(b => b.id === m.branchId);
-  const trainer = db.staff.find(s => s.id === m.trainerId);
-  const plans = db.plans.filter(p => p.active);
+  const { data: plan } = await supabase.from('plans').select('*').eq('id', m.planId).single();
+  const { data: branch } = await supabase.from('branches').select('*').eq('id', m.branchId).single();
+  const { data: trainer } = await supabase.from('staff').select('*').eq('id', m.trainerId).maybeSingle();
+  const { data: plansData } = await supabase.from('plans').select('*').eq('active', true);
+  const plans = plansData || [];
 
-  const payments = db.payments.filter(p => p.memberId === m.id).sort((a, b) => b.id.localeCompare(a.id));
-  const attendance = db.attendance.filter(a => a.memberId === m.id).sort((a, b) => b.id.localeCompare(a.id)).slice(0, 10);
+  const { data: paymentsData } = await supabase.from('payments').select('*').eq('memberId', m.id).order('id', { ascending: false });
+  const payments = paymentsData || [];
+  
+  const { data: attendanceData } = await supabase.from('attendance').select('*').eq('memberId', m.id).order('id', { ascending: false }).limit(10);
+  const attendance = attendanceData || [];
   
   const hasCheckedInToday = attendance.some(a => a.date === T);
 

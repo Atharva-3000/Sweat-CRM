@@ -1,4 +1,4 @@
-import { getDb } from "@/lib/db";
+import { supabase } from "@/lib/supabase";
 import { getBranchScope } from "@/lib/auth";
 import { Card, PageHeader } from "@/components/ui";
 import { today } from "@/lib/dates";
@@ -8,13 +8,16 @@ import Link from "next/link";
 import { Avatar } from "@/components/ui";
 
 export default async function AttendancePage() {
-  const db = await getDb();
+  const { data: _membersData } = await supabase.from('members').select('*');
+  const _members = _membersData || [];
+  const { data: _attendanceData } = await supabase.from('attendance').select('*');
+  const _attendance = _attendanceData || [];
   const scope = await getBranchScope();
   const T = today();
 
-  const members = db.members.filter(m => scope === "all" || m.branchId === scope);
+  const members = _members.filter(m => scope === "all" || m.branchId === scope);
   
-  const attendanceToday = db.attendance
+  const attendanceToday = _attendance
     .filter(a => (scope === "all" || a.branchId === scope) && a.date === T)
     .sort((a, b) => b.time.localeCompare(a.time));
 

@@ -1,19 +1,24 @@
-import { getDb } from "@/lib/db";
+import { supabase } from "@/lib/supabase";
 import { getBranchScope } from "@/lib/auth";
 import { Card, PageHeader, Badge } from "@/components/ui";
 import { formatINR } from "@/lib/dates";
 import Link from "next/link";
 
 export default async function PaymentsPage() {
-  const db = await getDb();
+  const { data: _paymentsData } = await supabase.from('payments').select('*');
+  const _payments = _paymentsData || [];
+  const { data: _branchesData } = await supabase.from('branches').select('*');
+  const _branches = _branchesData || [];
+  const { data: _membersData } = await supabase.from('members').select('*');
+  const _members = _membersData || [];
   const scope = await getBranchScope();
 
-  const payments = db.payments
+  const payments = _payments
     .filter(p => scope === "all" || p.branchId === scope)
     .sort((a, b) => b.date.localeCompare(a.date) || b.id.localeCompare(a.id));
 
-  const branches = db.branches;
-  const members = db.members;
+  const branches = _branches;
+  const members = _members;
 
   return (
     <div className="space-y-6">

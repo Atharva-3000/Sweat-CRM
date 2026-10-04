@@ -1,4 +1,3 @@
-import { getDb } from "@/lib/db";
 import { getBranchScope } from "@/lib/auth";
 import { memberViews } from "@/lib/queries";
 import { Card, PageHeader, StatusBadge, Avatar, Badge } from "@/components/ui";
@@ -8,10 +7,9 @@ import { ContactButtons } from "@/components/contact-buttons";
 
 export default async function MembersPage({ searchParams }: { searchParams: Promise<{ q?: string }> }) {
   const { q } = await searchParams;
-  const db = await getDb();
   const scope = await getBranchScope();
   
-  let members = memberViews(db, scope);
+  let members = await memberViews(scope);
   
   if (q) {
     const term = q.toLowerCase();

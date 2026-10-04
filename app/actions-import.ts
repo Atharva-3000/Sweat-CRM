@@ -1,9 +1,9 @@
 "use server";
 
 import { requireAdmin } from "@/lib/auth";
-import { getDb, mutate, nextId } from "@/lib/db";
 import { revalidatePath } from "next/cache";
 import { addDays, today } from "@/lib/dates";
+import { supabase } from "@/lib/supabase";
 
 async function guarded(fn: () => Promise<any>): Promise<any> {
   await requireAdmin();
@@ -68,8 +68,7 @@ function cleanPhone(raw: string): string {
 
 export async function parseImportFile(csvText: string): Promise<{ ok: boolean, rows?: ParsedRow[], error?: string }> {
   return guarded(async () => {
-    const db = await getDb();
-    const plans = db.plans;
+    const { data: plans } = await supabase.from('plans').select('*');
     
     // Simple CSV parser (handles commas in quotes roughly)
     const lines = csvText.split(/\r?\n/).filter(line => line.trim().length > 0);
@@ -100,8 +99,8 @@ export async function parseImportFile(csvText: string): Promise<{ ok: boolean, r
       const planNameStr = row.plan || row.membership || "";
       let planId = "";
       let planDurationDays = 30;
-      if (planNameStr) {
-        const found = plans.find(p => p.name.toLowerCase().includes(planNameStr.toLowerCase()));
+      if (planNameStr && plans) {
+        const found = plans.find((p: any) => p.name.toLowerCase().includes(planNameStr.toLowerCase()));
         if (found) {
            planId = found.id;
            planDurationDays = found.durationDays;
@@ -141,46 +140,53 @@ export async function parseImportFile(csvText: string): Promise<{ ok: boolean, r
 
 export async function commitImport(validRows: ParsedRow["parsed"][]): Promise<{ ok: boolean, message?: string }> {
   return guarded(async () => {
-    await mutate((db) => {
-      // Find default branch
-      const branchId = db.branches[0]?.id || "B01";
-      // Find a default trainer or admin
-      const trainerId = db.staff[0]?.id || "";
-      
-      let currentMax = 0;
-      db.members.forEach(m => {
-        const n = parseInt(m.id.replace("M", ""));
-        if (!isNaN(n) && n > currentMax) currentMax = n;
-      });
-      
-      const batchId = `import-${Date.now()}`;
-      
-      validRows.forEach(row => {
-        currentMax++;
-        const id = `M${String(currentMax).padStart(4, "0")}`;
-        
-        db.members.push({
-          id,
-          name: row.name,
-          phone: row.phone,
-          email: row.email,
-          gender: "Other", // Default, could be mapped if provided
-          dob: "",
-          address: "",
-          branchId,
-          planId: row.planId,
-          trainerId,
-          joinDate: today(),
-          startDate: row.startDate,
-          endDate: row.endDate,
-          status: "active",
-          frozenOn: "",
-          balanceDue: row.balanceDue,
-          emergencyContact: "",
-          notes: row.notes + `\n[Imported in batch ${batchId}]`.trim(),
-        });
-      });
+    const [{ data: branches }, { data: staff }, { data: members }] = await Promise.all([
+      supabase.from('branches').select('*').limit(1),
+      supabase.from('staff').select('*').limit(1),
+      supabase.from('members').select('id')
+    ]);
+    
+    const branchId = branches?.[0]?.id || "B01";
+    const trainerId = staff?.[0]?.id || "";
+    
+    let currentMax = 0;
+    (members || []).forEach((m: any) => {
+      const n = parseInt(m.id.replace("M", ""));
+      if (!isNaN(n) && n > currentMax) currentMax = n;
     });
+    
+    const batchId = `import-${Date.now()}`;
+    
+    const newMembers = validRows.map(row => {
+      currentMax++;
+      const id = `M${String(currentMax).padStart(4, "0")}`;
+      
+      return {
+        id,
+        name: row.name,
+        phone: row.phone,
+        email: row.email,
+        gender: "Other", // Default, could be mapped if provided
+        dob: "",
+        address: "",
+        branchId,
+        planId: row.planId,
+        trainerId,
+        joinDate: today(),
+        startDate: row.startDate,
+        endDate: row.endDate,
+        status: "active",
+        frozenOn: "",
+        balanceDue: row.balanceDue,
+        emergencyContact: "",
+        notes: row.notes + `\n[Imported in batch ${batchId}]`.trim(),
+      };
+    });
+    
+    if (newMembers.length > 0) {
+      const { error } = await supabase.from('members').insert(newMembers);
+      if (error) throw error;
+    }
     
     revalidatePath("/members");
     revalidatePath("/dashboard");
