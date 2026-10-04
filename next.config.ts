@@ -1,7 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  // exceljs is a Node-only library; keep it out of the server bundle.
+  serverExternalPackages: ["exceljs"],
 };
 
 export default nextConfig;
