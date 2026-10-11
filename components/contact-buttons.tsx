@@ -40,7 +40,7 @@ export function ContactButtons({
       ? "rounded-md p-1.5 transition hover:bg-slate-100"
       : "btn-secondary";
   return (
-    <div className="inline-flex items-center gap-1">
+    <div className="inline-flex flex-wrap items-center justify-center gap-1.5">
       <button type="button" title="Call" className={`${cls} text-sky-600`} onClick={() => setMode("call")}>
         <Phone className="h-4 w-4" />
         {size === "md" && "Call"}

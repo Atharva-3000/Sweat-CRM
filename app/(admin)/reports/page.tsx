@@ -45,7 +45,7 @@ export default async function ReportsPage() {
     <div className="space-y-6">
       <PageHeader title="Financial Reports" subtitle="6-month financial overview" />
 
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <StatCard 
            label="Revenue (This Month)" 
            value={formatINR(currentMonth.revenue)} 
@@ -63,7 +63,7 @@ export default async function ReportsPage() {
         />
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <Card title="Revenue Trend">
           <BarChart data={revChartData} format={formatINR} height={300} />
         </Card>

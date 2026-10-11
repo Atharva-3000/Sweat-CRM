@@ -1,17 +1,20 @@
 "use client";
 
 import { createContext, useCallback, useContext, useState, type ReactNode } from "react";
-import { CheckCircle2, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, XCircle } from "lucide-react";
 
 // ---------- App-wide context (settings needed by client components) ----------
 
 export type AppInfo = {
   gymName: string;
+  ownerName: string;
+  ownerLoginEmail: string;
   countryCode: string;
   branches: { id: string; name: string }[];
+  isDemo?: boolean;
 };
 
-const AppContext = createContext<AppInfo>({ gymName: "Gym", countryCode: "91", branches: [] });
+const AppContext = createContext<AppInfo>({ gymName: "Gym", ownerName: "Owner", ownerLoginEmail: "", countryCode: "91", branches: [], isDemo: false });
 export const useApp = () => useContext(AppContext);
 
 // ---------- Toasts ----------
@@ -32,8 +35,17 @@ export function Providers({ app, children }: { app: AppInfo; children: ReactNode
   return (
     <AppContext.Provider value={app}>
       <ToastContext.Provider value={push}>
+        {app.isDemo && (
+          <div className="sticky top-0 z-[80] flex h-7 w-full max-w-full overflow-hidden items-center justify-center gap-2 border-b border-indigo-200/70 dark:border-indigo-500/20 bg-indigo-50/90 dark:bg-indigo-950/70 px-3 text-xs font-medium text-indigo-700 dark:text-indigo-300 backdrop-blur-md select-none">
+            <span className="relative flex h-2 w-2 shrink-0">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-indigo-400 opacity-75" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-indigo-500 dark:bg-indigo-400" />
+            </span>
+            <span className="truncate">Demo Mode — Exploring preview environment</span>
+          </div>
+        )}
         {children}
-        <div className="pointer-events-none fixed right-4 bottom-4 z-[100] flex w-full max-w-sm flex-col gap-2">
+        <div className="pointer-events-none fixed inset-x-4 bottom-20 sm:inset-x-auto sm:right-4 sm:bottom-4 z-[100] flex sm:w-full sm:max-w-sm flex-col gap-2">
           {toasts.map((t) => (
             <div
               key={t.id}

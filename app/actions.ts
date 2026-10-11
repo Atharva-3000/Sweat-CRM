@@ -4,7 +4,7 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { requireAdmin } from "@/lib/auth";
-import { ADMIN_PASS, ADMIN_USER, BRANCH_COOKIE, SESSION_COOKIE, sessionToken } from "@/lib/session";
+import { ADMIN_PASS, ADMIN_USER, BRANCH_COOKIE, DEMO_COOKIE, SESSION_COOKIE, sessionToken } from "@/lib/session";
 import { addDays, daysBetween, nowTime, today } from "@/lib/dates";
 import { displayStatus, parseMemberRef, settingsOf } from "@/lib/queries";
 import { TEMPLATES, type TemplateKey } from "@/lib/templates";
@@ -27,6 +27,29 @@ const fail = (error: string): ActionResult => ({ ok: false, error });
 
 class UserError extends Error {}
 
+// ---------- 1-minute rate limiter for major actions ----------
+
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const globalForRateLimit = globalThis as unknown as {
+  __actionRateLimits?: Map<string, number>;
+};
+const actionRateLimits =
+  globalForRateLimit.__actionRateLimits ??
+  (globalForRateLimit.__actionRateLimits = new Map<string, number>());
+
+function checkRateLimit(key: string, label: string, windowMs = RATE_LIMIT_WINDOW_MS) {
+  const now = Date.now();
+  const last = actionRateLimits.get(key);
+  if (last && now - last < windowMs) {
+    const waitSec = Math.ceil((windowMs - (now - last)) / 1000);
+    throw new UserError(`Rate limit: Please wait ${waitSec}s before ${label} again (1 min cooldown).`);
+  }
+}
+
+function markRateLimit(key: string) {
+  actionRateLimits.set(key, Date.now());
+}
+
 async function guarded(fn: () => Promise<ActionResult>): Promise<ActionResult> {
   await requireAdmin();
   try {
@@ -35,6 +58,20 @@ async function guarded(fn: () => Promise<ActionResult>): Promise<ActionResult> {
     if (e instanceof UserError) return fail(e.message);
     throw e;
   }
+}
+
+async function rateLimitedGuarded(
+  key: string,
+  label: string,
+  fn: () => Promise<ActionResult>,
+  windowMs = RATE_LIMIT_WINDOW_MS
+): Promise<ActionResult> {
+  return guarded(async () => {
+    checkRateLimit(key, label, windowMs);
+    const res = await fn();
+    if (res.ok) markRateLimit(key);
+    return res;
+  });
 }
 
 async function getNextId(table: string, prefix: string, pad = 4): Promise<string> {
@@ -77,7 +114,12 @@ function validPhone(p: string) {
 export async function login(_prev: { error?: string } | undefined, fd: FormData) {
   const username = str(fd, "username");
   const password = str(fd, "password");
-  if (username !== ADMIN_USER || password !== ADMIN_PASS) {
+  const isDemo = str(fd, "demo") === "1";
+
+  if (!username || !password) {
+    return { error: "Please enter an ID and password" };
+  }
+  if (!isDemo && (username !== ADMIN_USER || password !== ADMIN_PASS)) {
     return { error: "Invalid username or password" };
   }
   const store = await cookies();
@@ -87,12 +129,23 @@ export async function login(_prev: { error?: string } | undefined, fd: FormData)
     path: "/",
     maxAge: 60 * 60 * 24 * 7,
   });
+  if (isDemo) {
+    store.set(DEMO_COOKIE, "1", {
+      httpOnly: true,
+      sameSite: "lax",
+      path: "/",
+      maxAge: 60 * 60 * 24 * 7,
+    });
+  } else {
+    store.delete(DEMO_COOKIE);
+  }
   redirect("/dashboard");
 }
 
 export async function logout() {
   const store = await cookies();
   store.delete(SESSION_COOKIE);
+  store.delete(DEMO_COOKIE);
   redirect("/login");
 }
 
@@ -207,7 +260,7 @@ export async function updateMember(fd: FormData): Promise<ActionResult> {
 }
 
 export async function deleteMember(fd: FormData): Promise<ActionResult> {
-  return guarded(async () => {
+  return rateLimitedGuarded("deleteMember", "removing a member", async () => {
     const id = str(fd, "id");
     await findMember(id); // Ensure exists
     await supabase.from('members').delete().eq('id', id);
@@ -290,7 +343,7 @@ export async function recordPayment(fd: FormData): Promise<ActionResult> {
 }
 
 export async function deletePayment(fd: FormData): Promise<ActionResult> {
-  return guarded(async () => {
+  return rateLimitedGuarded("deletePayment", "deleting a payment", async () => {
     const id = str(fd, "id");
     await supabase.from('payments').delete().eq('id', id);
     return ok("Payment deleted");
@@ -298,7 +351,7 @@ export async function deletePayment(fd: FormData): Promise<ActionResult> {
 }
 
 export async function freezeMember(fd: FormData): Promise<ActionResult> {
-  return guarded(async () => {
+  return rateLimitedGuarded("freezeMember", "freezing a membership", async () => {
     const id = str(fd, "id");
     const m = await findMember(id);
     await supabase.from('members').update({ status: "frozen", frozenOn: today() }).eq('id', id);
@@ -318,7 +371,7 @@ export async function unfreezeMember(fd: FormData): Promise<ActionResult> {
 }
 
 export async function setMemberCancelled(fd: FormData): Promise<ActionResult> {
-  return guarded(async () => {
+  return rateLimitedGuarded("setMemberCancelled", "updating membership cancellation status", async () => {
     const id = str(fd, "id");
     const cancel = str(fd, "cancel") === "1";
     await findMember(id);
@@ -407,7 +460,7 @@ export async function saveStaff(fd: FormData): Promise<ActionResult> {
 }
 
 export async function deleteStaff(fd: FormData): Promise<ActionResult> {
-  return guarded(async () => {
+  return rateLimitedGuarded("deleteStaff", "removing staff", async () => {
     const id = str(fd, "id");
     await supabase.from('staff').delete().eq('id', id);
     await supabase.from('members').update({ trainerId: "" }).eq('trainerId', id);
@@ -456,7 +509,7 @@ export async function setLeadStatus(fd: FormData): Promise<ActionResult> {
 }
 
 export async function deleteLead(fd: FormData): Promise<ActionResult> {
-  return guarded(async () => {
+  return rateLimitedGuarded("deleteLead", "deleting an enquiry", async () => {
     const id = str(fd, "id");
     await supabase.from('leads').delete().eq('id', id);
     return ok("Enquiry deleted");
@@ -490,7 +543,7 @@ export async function saveClass(fd: FormData): Promise<ActionResult> {
 }
 
 export async function deleteClass(fd: FormData): Promise<ActionResult> {
-  return guarded(async () => {
+  return rateLimitedGuarded("deleteClass", "removing a class", async () => {
     const id = str(fd, "id");
     await supabase.from('classes').delete().eq('id', id);
     await supabase.from('bookings').delete().eq('classId', id);
@@ -561,7 +614,7 @@ export async function addExpense(fd: FormData): Promise<ActionResult> {
 }
 
 export async function deleteExpense(fd: FormData): Promise<ActionResult> {
-  return guarded(async () => {
+  return rateLimitedGuarded("deleteExpense", "deleting an expense", async () => {
     const id = str(fd, "id");
     await supabase.from('expenses').delete().eq('id', id);
     return ok("Expense deleted");
@@ -593,7 +646,7 @@ export async function logMessage(input: {
 }
 
 export async function sendBulkReminder(fd: FormData): Promise<ActionResult> {
-  return guarded(async () => {
+  return rateLimitedGuarded("sendBulkReminder", "sending bulk reminders", async () => {
     const ids = str(fd, "memberIds").split(",").filter(Boolean);
     const template = (str(fd, "template") || "expiry") as TemplateKey;
     const channel = str(fd, "channel") || "whatsapp";
@@ -630,26 +683,40 @@ export async function sendBulkReminder(fd: FormData): Promise<ActionResult> {
 // ---------- settings ----------
 
 export async function saveSettings(fd: FormData): Promise<ActionResult> {
-  return guarded(async () => {
+  return rateLimitedGuarded("saveSettings", "updating gym settings", async () => {
     const keys = ["gymName", "ownerName", "reminderDays", "countryCode", "dbProvider", "googleSheetId", "senderEmail", "gstNumber", "gstRate", "sacCode"];
     for (const key of keys) {
+      if (!fd.has(key)) continue;
       const value = str(fd, key);
       const { data } = await supabase.from('settings').select('key').eq('key', key).single();
       if (data) await supabase.from('settings').update({ value }).eq('key', key);
       else await supabase.from('settings').insert({ key, value });
     }
     
-    const gstEnabled = fd.get("gstEnabled") === "on" ? "true" : "false";
-    const { data } = await supabase.from('settings').select('key').eq('key', "gstEnabled").single();
-    if (data) await supabase.from('settings').update({ value: gstEnabled }).eq('key', "gstEnabled");
-    else await supabase.from('settings').insert({ key: "gstEnabled", value: gstEnabled });
+    if (fd.has("gymName") || fd.has("gstEnabled")) {
+      const gstEnabled = fd.get("gstEnabled") === "on" ? "true" : "false";
+      const { data } = await supabase.from('settings').select('key').eq('key', "gstEnabled").single();
+      if (data) await supabase.from('settings').update({ value: gstEnabled }).eq('key', "gstEnabled");
+      else await supabase.from('settings').insert({ key: "gstEnabled", value: gstEnabled });
+    }
     
     return ok("Settings saved");
   });
 }
 
+export async function saveProfileSettings(fd: FormData): Promise<ActionResult> {
+  return rateLimitedGuarded("saveProfileSettings", "updating profile settings", async () => {
+    const ownerName = str(fd, "ownerName");
+    if (!ownerName) throw new UserError("Owner name is required");
+    const { data } = await supabase.from('settings').select('key').eq('key', "ownerName").single();
+    if (data) await supabase.from('settings').update({ value: ownerName }).eq('key', "ownerName");
+    else await supabase.from('settings').insert({ key: "ownerName", value: ownerName });
+    return ok("Profile updated");
+  });
+}
+
 export async function saveBranch(fd: FormData): Promise<ActionResult> {
-  return guarded(async () => {
+  return rateLimitedGuarded("saveBranch", "updating a branch", async () => {
     const id = str(fd, "id");
     const { data: b } = await supabase.from('branches').select('id').eq('id', id).single();
     if (!b) throw new UserError("Branch not found");
@@ -659,7 +726,7 @@ export async function saveBranch(fd: FormData): Promise<ActionResult> {
 }
 
 export async function resetDemoData(): Promise<ActionResult> {
-  return guarded(async () => {
+  return rateLimitedGuarded("resetDemoData", "resetting demo data", async () => {
     // Demo data functionality not fully reimplemented with supabase here
     return ok("Demo data functionality not available in Supabase mode");
   });
@@ -686,6 +753,7 @@ export async function completeOnboarding(fd: FormData): Promise<ActionResult> {
 
 export async function sendVerificationOTP(email: string): Promise<{ ok: boolean; message?: string; error?: string }> {
   try {
+    checkRateLimit("sendVerificationOTP", "requesting a verification code");
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     
     let senderEmail = "onboarding@cloverstudio.art";
@@ -723,9 +791,11 @@ export async function sendVerificationOTP(email: string): Promise<{ ok: boolean;
       }
     } else {
       console.log(`[MOCK EMAIL] To: ${email}, Subject: OTP, Body: ${otp}`);
+      markRateLimit("sendVerificationOTP");
       return { ok: true, message: "Mock OTP sent (check console)", error: otp }; 
     }
     
+    markRateLimit("sendVerificationOTP");
     return { ok: true, message: "OTP sent successfully" };
   } catch (e: any) {
     return { ok: false, error: e.message };
@@ -745,6 +815,7 @@ export async function sendTestEmail(fd: FormData): Promise<ActionResult> {
   if (!emailTo) return { ok: false, error: "Email is required" };
 
   try {
+    checkRateLimit("sendTestEmail", "sending a test email");
     let senderEmail = "onboarding@cloverstudio.art";
     let gymName = "Sweat CRM";
 
@@ -770,6 +841,7 @@ export async function sendTestEmail(fd: FormData): Promise<ActionResult> {
       if (error) {
         return { ok: false, error: error.message };
       }
+      markRateLimit("sendTestEmail");
       return { ok: true, message: "Test email sent successfully!" };
     } else {
       return { ok: false, error: "RESEND_API_KEY is not configured in .env.local" };
@@ -785,6 +857,7 @@ export async function verifyAndSaveLoginEmail(email: string, code: string): Prom
     const { data: loginRow } = await supabase.from('settings').select('key').eq('key', 'ownerLoginEmail').single();
     if (loginRow) await supabase.from('settings').update({ value: email }).eq('key', 'ownerLoginEmail');
     else await supabase.from('settings').insert({ key: 'ownerLoginEmail', value: email });
+    revalidatePath("/", "layout");
     return { ok: true };
   }
   return { ok: false, error: "Invalid OTP code" };
@@ -853,6 +926,7 @@ export async function loginWithOTP(email: string, code: string): Promise<{ ok: b
       path: "/",
       maxAge: 60 * 60 * 24 * 7,
     });
+    store.delete(DEMO_COOKIE);
     redirect("/dashboard");
   }
 

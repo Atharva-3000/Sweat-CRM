@@ -2,12 +2,12 @@
 
 import { useActionState, useState, useTransition } from "react";
 import { login, requestLoginOTP, loginWithOTP } from "@/app/actions";
-import { Dumbbell, Loader2, Mail, KeyRound } from "lucide-react";
+import { Dumbbell, Loader2, Mail, KeyRound, Sparkles } from "lucide-react";
 
 export function LoginForm({ gymName }: { gymName: string }) {
   const [state, action, pending] = useActionState(login, undefined);
   
-  const [mode, setMode] = useState<"email" | "password">("email");
+  const [mode, setMode] = useState<"demo" | "email" | "password">("demo");
   const [otpStep, setOtpStep] = useState(false);
   
   const [email, setEmail] = useState("");
@@ -87,15 +87,69 @@ export function LoginForm({ gymName }: { gymName: string }) {
       </div>
       
       <div className="flex bg-slate-100 dark:bg-slate-800 p-1 rounded-lg mb-6">
-         <button onClick={() => setMode("email")} className={`flex-1 flex items-center justify-center gap-2 text-sm font-medium py-2 rounded-md transition-all ${mode === "email" ? "bg-white dark:bg-[#18181b] shadow-sm text-slate-900 dark:text-white" : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"}`}>
-            <Mail className="w-4 h-4" /> Email OTP
+         <button
+           type="button"
+           onClick={() => setMode("demo")}
+           className={`min-w-0 flex-1 flex items-center justify-center gap-1.5 text-xs font-medium py-2 px-2 rounded-md transition-all cursor-pointer ${
+             mode === "demo"
+               ? "bg-white dark:bg-[#18181b] shadow-sm text-indigo-600 dark:text-indigo-400"
+               : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
+           }`}
+         >
+            <Sparkles className="w-3.5 h-3.5 shrink-0" /> Demo
          </button>
-         <button onClick={() => setMode("password")} className={`flex-1 flex items-center justify-center gap-2 text-sm font-medium py-2 rounded-md transition-all ${mode === "password" ? "bg-white dark:bg-[#18181b] shadow-sm text-slate-900 dark:text-white" : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"}`}>
-            <KeyRound className="w-4 h-4" /> Password
+         <button
+           type="button"
+           onClick={() => setMode("email")}
+           className={`min-w-0 flex-1 flex items-center justify-center gap-1.5 text-xs font-medium py-2 px-2 rounded-md transition-all cursor-pointer ${
+             mode === "email"
+               ? "bg-white dark:bg-[#18181b] shadow-sm text-slate-900 dark:text-white"
+               : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
+           }`}
+         >
+            <Mail className="w-3.5 h-3.5 shrink-0" /> Email OTP
+         </button>
+         <button
+           type="button"
+           onClick={() => setMode("password")}
+           className={`min-w-0 flex-1 flex items-center justify-center gap-1.5 text-xs font-medium py-2 px-2 rounded-md transition-all cursor-pointer ${
+             mode === "password"
+               ? "bg-white dark:bg-[#18181b] shadow-sm text-slate-900 dark:text-white"
+               : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
+           }`}
+         >
+            <KeyRound className="w-3.5 h-3.5 shrink-0" /> Password
          </button>
       </div>
 
-      {mode === "email" ? (
+      {mode === "demo" && (
+         <form key="demo-form" action={action} className="space-y-4">
+            <input type="hidden" name="demo" value="1" />
+            <div className="rounded-lg border border-indigo-200 dark:border-indigo-500/20 bg-indigo-50/70 dark:bg-indigo-500/10 px-3 py-2.5 text-xs text-indigo-800 dark:text-indigo-300">
+              <p className="font-semibold flex items-center gap-1.5">
+                <Sparkles className="h-3.5 w-3.5 shrink-0" /> Demo Mode Active
+              </p>
+              <p className="mt-0.5 text-indigo-700/80 dark:text-indigo-300/80">
+                Enter any ID and any password below to sign in directly as Admin.
+              </p>
+            </div>
+            <div>
+              <label className="label" htmlFor="demo-username">User ID / Username</label>
+              <input id="demo-username" name="username" className="input" placeholder="Enter any ID..." defaultValue="demo" required />
+            </div>
+            <div>
+              <label className="label" htmlFor="demo-password">Password</label>
+              <input id="demo-password" name="password" type="password" className="input" placeholder="Enter any password..." defaultValue="demo" required />
+            </div>
+            {state?.error && <p className="rounded-lg bg-red-50 dark:bg-red-500/10 px-3 py-2 text-sm text-red-600 dark:text-red-400">{state.error}</p>}
+            <button type="submit" className="btn-primary w-full" disabled={pending}>
+              {pending && <Loader2 className="h-4 w-4 animate-spin" />}
+              Enter Demo as Admin
+            </button>
+         </form>
+      )}
+
+      {mode === "email" && (
          <form key="email-form" onSubmit={handleRequestOTP} className="space-y-4">
             <div>
               <label className="label" htmlFor="email-input">Admin Email Address</label>
@@ -107,7 +161,9 @@ export function LoginForm({ gymName }: { gymName: string }) {
               Send Login Code
             </button>
          </form>
-      ) : (
+      )}
+
+      {mode === "password" && (
          <form key="password-form" action={action} className="space-y-4">
             <div>
               <label className="label" htmlFor="username">Username</label>
@@ -115,7 +171,7 @@ export function LoginForm({ gymName }: { gymName: string }) {
             </div>
             <div>
               <label className="label" htmlFor="password">Password</label>
-              <input id="password" name="password" type="password" className="input" autoComplete="current-password" required />
+              <input id="password" name="password" type="password" className="input" placeholder="Enter any password..." autoComplete="current-password" required />
             </div>
             {state?.error && <p className="rounded-lg bg-red-50 dark:bg-red-500/10 px-3 py-2 text-sm text-red-600 dark:text-red-400">{state.error}</p>}
             <button type="submit" className="btn-primary w-full" disabled={pending}>

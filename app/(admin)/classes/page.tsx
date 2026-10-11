@@ -71,7 +71,7 @@ export default async function ClassesPage() {
         }
       />
 
-      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+      <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
         {days.map(day => {
           const dayClasses = classes.filter(c => c.day === day).sort((a, b) => a.time.localeCompare(b.time));
           if (dayClasses.length === 0) return null;
@@ -91,7 +91,7 @@ export default async function ClassesPage() {
                            <ActionButton 
                              action={deleteClass} 
                              fields={{ id: c.id }} 
-                             className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 text-red-500 hover:text-red-700 text-xs transition-opacity"
+                             className="absolute top-2 right-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 text-red-500 hover:text-red-700 text-xs transition-opacity"
                              confirm="Delete this class?"
                            >
                               Delete

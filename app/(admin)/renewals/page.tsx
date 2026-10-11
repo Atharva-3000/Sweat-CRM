@@ -18,7 +18,7 @@ export default async function RenewalsPage() {
     <div className="space-y-6">
       <PageHeader title="Renewals & Dues" subtitle="Track expiring memberships and pending payments" />
 
-      <div className="grid gap-6 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <Card title={`Expiring Soon (${expiring.length})`} bodyClassName="p-0">
            <div className="divide-y divide-slate-100 h-96 overflow-y-auto">
               {expiring.map(m => (

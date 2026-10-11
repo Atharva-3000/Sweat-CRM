@@ -5,6 +5,7 @@ export const ADMIN_USER = "admin";
 export const ADMIN_PASS = "12345";
 
 export const SESSION_COOKIE = "gym_session";
+export const DEMO_COOKIE = "gym_demo_mode";
 export const BRANCH_COOKIE = "gym_branch";
 
 const SECRET = process.env.SESSION_SECRET || "powerhouse-demo-secret";

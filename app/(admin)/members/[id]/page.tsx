@@ -100,10 +100,10 @@ export default async function MemberPage({ params }: { params: Promise<{ id: str
         }
       />
 
-      <div className="grid gap-6 md:grid-cols-3">
-        <div className="space-y-6 md:col-span-2">
+      <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
+        <div className="space-y-6 min-w-0 md:col-span-2">
            <Card title="Membership Details">
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                  <div>
                    <p className="text-xs text-slate-500 dark:text-slate-400">Plan</p>
                    <p className="font-medium">{plan?.name || "Unknown"}</p>

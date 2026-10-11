@@ -1,10 +1,15 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { BRANCH_COOKIE, SESSION_COOKIE, isValidToken } from "./session";
+import { BRANCH_COOKIE, DEMO_COOKIE, SESSION_COOKIE, isValidToken } from "./session";
 
 export async function isAuthed(): Promise<boolean> {
   const store = await cookies();
   return isValidToken(store.get(SESSION_COOKIE)?.value);
+}
+
+export async function isDemoSession(): Promise<boolean> {
+  const store = await cookies();
+  return store.get(DEMO_COOKIE)?.value === "1";
 }
 
 /** Call at the top of every admin page and server action. */

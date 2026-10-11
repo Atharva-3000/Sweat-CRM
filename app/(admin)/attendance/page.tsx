@@ -1,51 +1,48 @@
 import { supabase } from "@/lib/supabase";
 import { getBranchScope } from "@/lib/auth";
-import { Card, PageHeader } from "@/components/ui";
+import { Card, PageHeader, Avatar } from "@/components/ui";
 import { today } from "@/lib/dates";
-import { ActionForm, SubmitButton } from "@/components/action-form";
-import { checkIn } from "@/app/actions";
+import { memberViews } from "@/lib/queries";
+import { QuickCheckIn } from "@/components/quick-checkin";
 import Link from "next/link";
-import { Avatar } from "@/components/ui";
 
 export default async function AttendancePage() {
-  const { data: _membersData } = await supabase.from('members').select('*');
-  const _members = _membersData || [];
-  const { data: _attendanceData } = await supabase.from('attendance').select('*');
-  const _attendance = _attendanceData || [];
   const scope = await getBranchScope();
   const T = today();
+  const [mViews, { data: _attendanceData }] = await Promise.all([
+    memberViews(scope),
+    supabase.from('attendance').select('*'),
+  ]);
+  const _attendance = _attendanceData || [];
 
-  const members = _members.filter(m => scope === "all" || m.branchId === scope);
-  
   const attendanceToday = _attendance
     .filter(a => (scope === "all" || a.branchId === scope) && a.date === T)
     .sort((a, b) => b.time.localeCompare(a.time));
+
+  const checkedInIds = new Set(attendanceToday.map(a => a.memberId));
+
+  const checkInOptions = mViews.map(m => ({
+    id: m.id,
+    name: m.name,
+    phone: m.phone,
+    display: m.display,
+    planName: m.planName,
+    checkedInToday: checkedInIds.has(m.id),
+  }));
 
   return (
     <div className="space-y-6">
       <PageHeader title="Attendance" subtitle={`Check-ins for ${T}`} />
 
-      <div className="grid gap-6 lg:grid-cols-3">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <Card title="Quick Check-in">
-           <ActionForm action={checkIn} className="space-y-4">
-              <input type="hidden" name="date" value={T} />
-              <div>
-                <label className="label">Select Member</label>
-                <select name="member" required className="input">
-                  <option value="">Search member...</option>
-                  {members.map(m => (
-                    <option key={m.id} value={m.id}>{m.name} ({m.phone})</option>
-                  ))}
-                </select>
-              </div>
-              <SubmitButton className="w-full">Record Check-in</SubmitButton>
-           </ActionForm>
+          <QuickCheckIn members={checkInOptions} date={T} />
         </Card>
 
         <Card title="Today's Check-ins" bodyClassName="p-0" className="lg:col-span-2">
-           <div className="divide-y divide-slate-100 max-h-[500px] overflow-y-auto">
+           <div className="divide-y divide-slate-100 dark:divide-white/[0.05] max-h-[500px] overflow-y-auto">
               {attendanceToday.map(a => {
-                 const m = members.find(mx => mx.id === a.memberId);
+                 const m = mViews.find(mx => mx.id === a.memberId);
                  if (!m) return null;
                  return (
                    <div key={a.id} className="flex items-center justify-between p-4">

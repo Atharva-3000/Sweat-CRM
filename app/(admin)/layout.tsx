@@ -1,13 +1,14 @@
 import { Providers } from "@/components/providers";
 import { Shell } from "@/components/shell";
 import { Onboarding } from "@/components/onboarding";
-import { requireAdmin, getBranchScope } from "@/lib/auth";
+import { requireAdmin, getBranchScope, isDemoSession } from "@/lib/auth";
 import { supabase } from "@/lib/supabase";
 import { memberViews, settingsOf } from "@/lib/queries";
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
   await requireAdmin();
   const scope = await getBranchScope();
+  const isDemo = await isDemoSession();
   const s = await settingsOf();
 
   // Compute badges for navigation
@@ -26,8 +27,11 @@ export default async function DashboardLayout({ children }: { children: React.Re
     <Providers
       app={{
         gymName: s.gymName,
+        ownerName: s.ownerName,
+        ownerLoginEmail: s.ownerLoginEmail || "",
         countryCode: s.countryCode,
         branches: branches,
+        isDemo,
       }}
     >
       {!s.onboardingComplete ? (
